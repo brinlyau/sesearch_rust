@@ -1,4 +1,4 @@
-//! `sesearch` — a dependency-free parser and query engine for SELinux binary
+//! `sesearch_rust` — a dependency-free parser and query engine for SELinux binary
 //! kernel policies (Android `sepolicy` / `precompiled_sepolicy`, or a live
 //! `/sys/fs/selinux/policy`).
 //!

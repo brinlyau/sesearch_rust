@@ -1,5 +1,5 @@
 [package]
-name = "sesearch"
+name = "sesearch_rust"
 version = "0.1.0"
 edition = "2021"
 description = "A sesearch-style query tool for SELinux binary kernel policies (Android sepolicy / precompiled_sepolicy)"
@@ -7,11 +7,11 @@ license = "MIT"
 repository = "https://github.com/brinlyau/sesearchmac"
 
 [lib]
-name = "sesearch"
+name = "sesearch_rust"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sesearch"
+name = "sesearch_rust"
 path = "src/main.rs"
 
 [profile.release]

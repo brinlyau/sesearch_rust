@@ -1,19 +1,19 @@
-//! `sesearch` — query SELinux binary kernel policies.
+//! `sesearch_rust` — query SELinux binary kernel policies.
 //!
 //! A self-contained, dependency-free reimplementation of the parts of SETools'
 //! `sesearch`/`seinfo` that work against a compiled kernel policy blob
 //! (Android `sepolicy` / `precompiled_sepolicy`, or `/sys/fs/selinux/policy`).
 
-use sesearch::{json, parser, policy};
+use sesearch_rust::{json, parser, policy};
 
 use policy::{Policy, Query};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-sesearch — query SELinux binary kernel policies
+sesearch_rust — query SELinux binary kernel policies
 
 USAGE:
-    sesearch [RULE TYPES] [FILTERS] [OPTIONS] <policy>
+    sesearch_rust [RULE TYPES] [FILTERS] [OPTIONS] <policy>
 
     <policy> is a compiled kernel policy: an Android `sepolicy` /
     `precompiled_sepolicy`, or `/sys/fs/selinux/policy` on a live system.
@@ -50,11 +50,11 @@ OPTIONS:
     -V, --version          show version
 
 EXAMPLES:
-    sesearch -A -s untrusted_app -t shell_data_file -c file sepolicy
-    sesearch -A -p execute_no_trans sepolicy
-    sesearch -T -s init sepolicy
-    sesearch --classes sepolicy
-    sesearch --expand domain sepolicy
+    sesearch_rust -A -s untrusted_app -t shell_data_file -c file sepolicy
+    sesearch_rust -A -p execute_no_trans sepolicy
+    sesearch_rust -T -s init sepolicy
+    sesearch_rust --classes sepolicy
+    sesearch_rust --expand domain sepolicy
 ";
 
 #[derive(Default)]
@@ -99,7 +99,7 @@ impl Config {
 }
 
 /// Restore the default `SIGPIPE` disposition. Rust installs `SIG_IGN`, which
-/// turns a closed downstream pipe (e.g. `sesearch ... | head`) into an `EPIPE`
+/// turns a closed downstream pipe (e.g. `sesearch_rust ... | head`) into an `EPIPE`
 /// that panics on the next write. Resetting to `SIG_DFL` makes the process exit
 /// quietly, the way every other Unix filter does.
 #[cfg(unix)]
@@ -123,7 +123,7 @@ fn main() -> ExitCode {
     match run(args) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("sesearch: error: {e}");
+            eprintln!("sesearch_rust: error: {e}");
             ExitCode::FAILURE
         }
     }
@@ -184,7 +184,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
                 return Ok(None);
             }
             "-V" | "--version" => {
-                println!("sesearch {}", env!("CARGO_PKG_VERSION"));
+                println!("sesearch_rust {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
             "-A" | "--allow" => cfg.allow = true,
