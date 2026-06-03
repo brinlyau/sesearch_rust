@@ -234,12 +234,16 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             }
             SYM_LEVELS => {
                 for _ in 0..nel {
-                    skip_sens(&mut r)?;
+                    if let Some(name) = read_sens(&mut r)? {
+                        policy.sensitivities.push(name);
+                    }
                 }
             }
             SYM_CATS => {
                 for _ in 0..nel {
-                    skip_cat(&mut r)?;
+                    if let Some(name) = read_cat(&mut r)? {
+                        policy.categories.push(name);
+                    }
                 }
             }
             _ => {}
@@ -604,19 +608,22 @@ fn read_bool(r: &mut Reader) -> Result<(String, bool), String> {
     Ok((name, state))
 }
 
-fn skip_sens(r: &mut Reader) -> Result<(), String> {
+/// A sensitivity datum; returns its name unless it's an alias.
+fn read_sens(r: &mut Reader) -> Result<Option<String>, String> {
     let len = r.read_u32()? as usize;
-    let _isalias = r.read_u32()?;
-    let _name = r.read_key(len)?;
-    r.skip_mls_level()
+    let isalias = r.read_u32()?;
+    let name = r.read_key(len)?;
+    r.skip_mls_level()?;
+    Ok((isalias == 0).then_some(name))
 }
 
-fn skip_cat(r: &mut Reader) -> Result<(), String> {
+/// A category datum; returns its name unless it's an alias.
+fn read_cat(r: &mut Reader) -> Result<Option<String>, String> {
     let len = r.read_u32()? as usize;
     let _value = r.read_u32()?;
-    let _isalias = r.read_u32()?;
-    let _name = r.read_key(len)?;
-    Ok(())
+    let isalias = r.read_u32()?;
+    let name = r.read_key(len)?;
+    Ok((isalias == 0).then_some(name))
 }
 
 // ---------------------------------------------------------------------------

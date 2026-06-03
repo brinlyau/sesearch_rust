@@ -225,6 +225,10 @@ pub struct Policy {
     /// Object class -> ordered permission names.
     pub classes: BTreeMap<String, Vec<String>>,
     pub booleans: BTreeMap<String, bool>,
+    /// MLS sensitivities, in declaration order (low to high).
+    pub sensitivities: Vec<String>,
+    /// MLS categories, in declaration order.
+    pub categories: Vec<String>,
     pub av_rules: Vec<AvRule>,
     pub xperm_rules: Vec<XpermRule>,
     pub te_rules: Vec<TeRule>,

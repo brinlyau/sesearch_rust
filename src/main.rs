@@ -41,6 +41,8 @@ INFO (seinfo-style; printed instead of rules):
         --booleans         list booleans and their default state
         --policycaps       list enabled policy capabilities
         --constrain        list constrain / mlsconstrain statements (filter with -c)
+        --sensitivities    list MLS sensitivities
+        --categories       list MLS categories
         --genfs            list genfscon entries
         --expand <ATTR>    list the member types of an attribute
 
@@ -79,6 +81,8 @@ struct Config {
     list_booleans: bool,
     list_policycaps: bool,
     list_genfs: bool,
+    list_sensitivities: bool,
+    list_categories: bool,
     expand_attr: Option<String>,
     // output
     json: bool,
@@ -97,6 +101,8 @@ impl Config {
             || self.list_booleans
             || self.list_policycaps
             || self.list_genfs
+            || self.list_sensitivities
+            || self.list_categories
             || self.constrain
             || self.expand_attr.is_some()
     }
@@ -222,6 +228,8 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
             "--booleans" => cfg.list_booleans = true,
             "--policycaps" => cfg.list_policycaps = true,
             "--genfs" => cfg.list_genfs = true,
+            "--sensitivities" | "--sens" => cfg.list_sensitivities = true,
+            "--categories" | "--cats" => cfg.list_categories = true,
             "--constrain" => cfg.constrain = true,
             "--expand" | "--expand-attr" => {
                 cfg.expand_attr = Some(take_value(&flag, inline, &mut it)?)
@@ -451,6 +459,12 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
             }
         }
     }
+    if cfg.list_sensitivities {
+        print_rendered(policy.sensitivities.clone(), cfg.json);
+    }
+    if cfg.list_categories {
+        print_rendered(policy.categories.clone(), cfg.json);
+    }
     if cfg.constrain {
         let class = cfg.query.class.as_deref();
         let lines: Vec<String> = policy
@@ -527,6 +541,8 @@ fn print_stats(p: &Policy) {
     println!("xperm rules:       {}", p.xperm_rules.len());
     println!("type rules:        {}", p.te_rules.len());
     println!("constraints:       {}", p.constraints.len());
+    println!("sensitivities:     {}", p.sensitivities.len());
+    println!("categories:        {}", p.categories.len());
     println!("genfscon entries:  {}", p.genfs.len());
     println!("policy caps:       {}", p.policycaps.len());
 }
@@ -557,6 +573,8 @@ fn stats_json(p: &Policy) -> json::Value {
         ("xperm_rules".into(), Num(p.xperm_rules.len() as i64)),
         ("type_rules".into(), Num(p.te_rules.len() as i64)),
         ("constraints".into(), Num(p.constraints.len() as i64)),
+        ("sensitivities".into(), Num(p.sensitivities.len() as i64)),
+        ("categories".into(), Num(p.categories.len() as i64)),
         ("genfs".into(), Num(p.genfs.len() as i64)),
         ("policycaps".into(), Num(p.policycaps.len() as i64)),
     ])
