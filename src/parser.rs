@@ -53,8 +53,34 @@ const AVTAB_XPERMS: u16 = AVTAB_XPERMS_ALLOWED | AVTAB_XPERMS_AUDITALLOW | AVTAB
 const AVTAB_XPERMS_IOCTLFUNCTION: u8 = 1;
 const AVTAB_XPERMS_IOCTLDRIVER: u8 = 2;
 
-// Constraint expression node types (only CEXPR_NAMES carries name sets).
+// Constraint expression node types.
+const CEXPR_NOT: u32 = 1;
+const CEXPR_AND: u32 = 2;
+const CEXPR_OR: u32 = 3;
+const CEXPR_ATTR: u32 = 4;
 const CEXPR_NAMES: u32 = 5;
+
+// Constraint expression attribute flags.
+const CEXPR_USER: u32 = 1;
+const CEXPR_ROLE: u32 = 2;
+const CEXPR_TYPE: u32 = 4;
+const CEXPR_TARGET: u32 = 8;
+const CEXPR_XTARGET: u32 = 16;
+const CEXPR_L1L2: u32 = 32;
+const CEXPR_L1H2: u32 = 64;
+const CEXPR_H1L2: u32 = 128;
+const CEXPR_H1H2: u32 = 256;
+const CEXPR_L1H1: u32 = 512;
+const CEXPR_L2H2: u32 = 1024;
+const CEXPR_MLS_MASK: u32 =
+    CEXPR_L1L2 | CEXPR_L1H2 | CEXPR_H1L2 | CEXPR_H1H2 | CEXPR_L1H1 | CEXPR_L2H2;
+
+// Constraint expression operators.
+const CEXPR_EQ: u32 = 1;
+const CEXPR_NEQ: u32 = 2;
+const CEXPR_DOM: u32 = 3;
+const CEXPR_DOMBY: u32 = 4;
+const CEXPR_INCOMP: u32 = 5;
 
 // type_datum property flags (version >= BOUNDARY).
 const TYPE_PROP_ATTRIBUTE: u32 = 0x0002;
@@ -74,6 +100,23 @@ struct ClassDatum {
     value: u32,
     common_name: Option<String>,
     perms: Vec<Perm>,
+}
+
+/// A single constraint-expression node, captured raw and rendered later (once
+/// the type/role/user name maps are populated).
+struct RawExpr {
+    expr_type: u32,
+    attr: u32,
+    op: u32,
+    names: Vec<u32>, // 1-based symbol values, for CEXPR_NAMES nodes
+}
+
+/// A constraint captured during class parsing, pending rendering.
+struct RawConstraint {
+    class_value: u32,
+    perm_mask: u32,
+    exprs: Vec<RawExpr>,
+    validatetrans: bool,
 }
 
 /// A class with its full permission set (common-inherited + class-specific),
@@ -132,7 +175,10 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
     // ---- Symbol tables (each preceded by its own nprim/nel) ----
     let mut commons: HashMap<String, Vec<Perm>> = HashMap::new();
     let mut classes: Vec<ClassDatum> = Vec::new();
+    let mut raw_constraints: Vec<RawConstraint> = Vec::new();
     let mut type_val_to_name: HashMap<u32, String> = HashMap::new();
+    let mut role_val_to_name: HashMap<u32, String> = HashMap::new();
+    let mut user_val_to_name: HashMap<u32, String> = HashMap::new();
     let mut attr_names: BTreeSet<String> = BTreeSet::new();
     let mut types_nprim: usize = 0;
 
@@ -148,13 +194,16 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             }
             SYM_CLASSES => {
                 for _ in 0..nel {
-                    classes.push(read_class(&mut r, version)?);
+                    let (cd, cons) = read_class(&mut r, version)?;
+                    raw_constraints.extend(cons);
+                    classes.push(cd);
                 }
             }
             SYM_ROLES => {
                 policy.role_count = nel as usize;
                 for _ in 0..nel {
-                    skip_role(&mut r, version)?;
+                    let (name, value) = read_role(&mut r, version)?;
+                    role_val_to_name.insert(value, name);
                 }
             }
             SYM_TYPES => {
@@ -173,7 +222,8 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             SYM_USERS => {
                 policy.user_count = nel as usize;
                 for _ in 0..nel {
-                    skip_user(&mut r, version, mls)?;
+                    let (name, value) = read_user(&mut r, version, mls)?;
+                    user_val_to_name.insert(value, name);
                 }
             }
             SYM_BOOLS => {
@@ -222,6 +272,34 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
                 perms,
             },
         );
+    }
+
+    // ---- Render constraints (now that name maps exist) ----
+    let names = NameMaps {
+        types: &type_val_to_name,
+        roles: &role_val_to_name,
+        users: &user_val_to_name,
+    };
+    for rc in &raw_constraints {
+        let Some(class) = class_map.get(&rc.class_value) else {
+            continue;
+        };
+        let (expr, mls) = render_constraint_expr(&rc.exprs, &names);
+        if expr.is_empty() {
+            continue;
+        }
+        let perms = if rc.validatetrans {
+            Vec::new()
+        } else {
+            decode_perms(rc.perm_mask, class)
+        };
+        policy.constraints.push(Constraint {
+            class: class.name.clone(),
+            perms,
+            expr,
+            mls,
+            validatetrans: rc.validatetrans,
+        });
     }
 
     let ctx = Ctx {
@@ -387,7 +465,7 @@ fn read_common(r: &mut Reader) -> Result<(String, Vec<Perm>), String> {
     Ok((name, perms))
 }
 
-fn read_class(r: &mut Reader, version: u32) -> Result<ClassDatum, String> {
+fn read_class(r: &mut Reader, version: u32) -> Result<(ClassDatum, Vec<RawConstraint>), String> {
     let len = r.read_u32()? as usize;
     let common_len = r.read_u32()? as usize;
     let value = r.read_u32()?;
@@ -407,13 +485,14 @@ fn read_class(r: &mut Reader, version: u32) -> Result<ClassDatum, String> {
         perms.push(read_perm(r)?);
     }
 
+    let mut constraints = Vec::new();
     for _ in 0..ncons {
-        skip_constraint(r, version)?;
+        constraints.push(read_constraint(r, version, value, false)?);
     }
     if version >= V_VALIDATETRANS {
         let nvtrans = r.read_u32()?;
         for _ in 0..nvtrans {
-            skip_constraint(r, version)?;
+            constraints.push(read_constraint(r, version, value, true)?);
         }
     }
     if version >= V_NEW_OBJECT_DEFAULTS {
@@ -423,46 +502,68 @@ fn read_class(r: &mut Reader, version: u32) -> Result<ClassDatum, String> {
         r.skip(4)?; // default_type
     }
 
-    Ok(ClassDatum {
-        name,
-        value,
-        common_name,
-        perms,
-    })
+    Ok((
+        ClassDatum {
+            name,
+            value,
+            common_name,
+            perms,
+        },
+        constraints,
+    ))
 }
 
-/// A constraint: a permission mask, then a list of expression nodes. Only
-/// `CEXPR_NAMES` nodes carry a names ebitmap (and, on newer policies, a type
-/// name set) — reading one for any other node type would desync the stream.
-fn skip_constraint(r: &mut Reader, version: u32) -> Result<(), String> {
-    let _permissions = r.read_u32()?;
+/// A constraint: a permission mask, then a list of expression nodes (in
+/// reverse-Polish order). Only `CEXPR_NAMES` nodes carry a names ebitmap (and,
+/// on newer policies, a type name set) — reading one for any other node type
+/// would desync the stream.
+fn read_constraint(
+    r: &mut Reader,
+    version: u32,
+    class_value: u32,
+    validatetrans: bool,
+) -> Result<RawConstraint, String> {
+    let perm_mask = r.read_u32()?;
     let nexpr = r.read_u32()?;
+    let mut exprs = Vec::with_capacity(nexpr as usize);
     for _ in 0..nexpr {
         let expr_type = r.read_u32()?;
-        let _attr = r.read_u32()?;
-        let _op = r.read_u32()?;
+        let attr = r.read_u32()?;
+        let op = r.read_u32()?;
+        let mut names = Vec::new();
         if expr_type == CEXPR_NAMES {
-            r.skip_ebitmap()?; // names
+            names = r.read_ebitmap()?.into_iter().map(|b| b + 1).collect();
             if version >= V_CONSTRAINT_NAMES {
                 r.skip_ebitmap()?; // type_names.types
                 r.skip_ebitmap()?; // type_names.negset
                 let _flags = r.read_u32()?;
             }
         }
+        exprs.push(RawExpr {
+            expr_type,
+            attr,
+            op,
+            names,
+        });
     }
-    Ok(())
+    Ok(RawConstraint {
+        class_value,
+        perm_mask,
+        exprs,
+        validatetrans,
+    })
 }
 
-fn skip_role(r: &mut Reader, version: u32) -> Result<(), String> {
+fn read_role(r: &mut Reader, version: u32) -> Result<(String, u32), String> {
     let len = r.read_u32()? as usize;
-    let _value = r.read_u32()?;
+    let value = r.read_u32()?;
     if version >= V_BOUNDARY {
         let _bounds = r.read_u32()?;
     }
-    let _name = r.read_key(len)?;
+    let name = r.read_key(len)?;
     r.skip_ebitmap()?; // dominates
     r.skip_ebitmap()?; // types
-    Ok(())
+    Ok((name, value))
 }
 
 fn read_type(r: &mut Reader, version: u32) -> Result<(String, u32, bool), String> {
@@ -480,19 +581,19 @@ fn read_type(r: &mut Reader, version: u32) -> Result<(String, u32, bool), String
     Ok((name, value, is_attrib))
 }
 
-fn skip_user(r: &mut Reader, version: u32, mls: bool) -> Result<(), String> {
+fn read_user(r: &mut Reader, version: u32, mls: bool) -> Result<(String, u32), String> {
     let len = r.read_u32()? as usize;
-    let _value = r.read_u32()?;
+    let value = r.read_u32()?;
     if version >= V_BOUNDARY {
         let _bounds = r.read_u32()?;
     }
-    let _name = r.read_key(len)?;
+    let name = r.read_key(len)?;
     r.skip_ebitmap()?; // roles
     if mls {
         r.skip_mls_range()?; // range
         r.skip_mls_level()?; // default level
     }
-    Ok(())
+    Ok((name, value))
 }
 
 fn read_bool(r: &mut Reader) -> Result<(String, bool), String> {
@@ -516,6 +617,135 @@ fn skip_cat(r: &mut Reader) -> Result<(), String> {
     let _isalias = r.read_u32()?;
     let _name = r.read_key(len)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Constraint expression rendering
+// ---------------------------------------------------------------------------
+
+/// Value -> name maps for resolving constraint name sets.
+struct NameMaps<'a> {
+    types: &'a HashMap<u32, String>,
+    roles: &'a HashMap<u32, String>,
+    users: &'a HashMap<u32, String>,
+}
+
+/// Render a constraint's reverse-Polish expression list into an infix string,
+/// returning the string and whether it references MLS levels. Returns an empty
+/// string if the expression can't be rendered (leaving an unbalanced stack).
+fn render_constraint_expr(exprs: &[RawExpr], names: &NameMaps) -> (String, bool) {
+    let mut stack: Vec<String> = Vec::new();
+    let mut mls = false;
+
+    for e in exprs {
+        match e.expr_type {
+            CEXPR_NOT => {
+                let Some(a) = stack.pop() else {
+                    return (String::new(), mls);
+                };
+                stack.push(format!("not ({})", a));
+            }
+            CEXPR_AND | CEXPR_OR => {
+                let (Some(b), Some(a)) = (stack.pop(), stack.pop()) else {
+                    return (String::new(), mls);
+                };
+                let kw = if e.expr_type == CEXPR_AND { "and" } else { "or" };
+                stack.push(format!("{} {} {}", a, kw, b));
+            }
+            CEXPR_ATTR => {
+                if e.attr & CEXPR_MLS_MASK != 0 {
+                    mls = true;
+                }
+                let (lhs, rhs) = attr_operands(e.attr);
+                stack.push(format!("{} {} {}", lhs, op_symbol(e.op), rhs));
+            }
+            CEXPR_NAMES => {
+                let lhs = names_lhs(e.attr);
+                let map = if e.attr & CEXPR_USER != 0 {
+                    names.users
+                } else if e.attr & CEXPR_ROLE != 0 {
+                    names.roles
+                } else {
+                    names.types
+                };
+                let mut resolved: Vec<String> = e
+                    .names
+                    .iter()
+                    .map(|v| map.get(v).cloned().unwrap_or_else(|| format!("#{}", v)))
+                    .collect();
+                resolved.sort();
+                let set = match resolved.len() {
+                    1 => resolved.into_iter().next().unwrap(),
+                    _ => format!("{{ {} }}", resolved.join(" ")),
+                };
+                stack.push(format!("{} {} {}", lhs, op_symbol(e.op), set));
+            }
+            _ => return (String::new(), mls),
+        }
+    }
+
+    match stack.len() {
+        1 => (stack.pop().unwrap(), mls),
+        _ => (String::new(), mls),
+    }
+}
+
+/// The left/right operands for a `CEXPR_ATTR` comparison.
+fn attr_operands(attr: u32) -> (&'static str, &'static str) {
+    if attr & CEXPR_L1L2 != 0 {
+        ("l1", "l2")
+    } else if attr & CEXPR_L1H2 != 0 {
+        ("l1", "h2")
+    } else if attr & CEXPR_H1L2 != 0 {
+        ("h1", "l2")
+    } else if attr & CEXPR_H1H2 != 0 {
+        ("h1", "h2")
+    } else if attr & CEXPR_L1H1 != 0 {
+        ("l1", "h1")
+    } else if attr & CEXPR_L2H2 != 0 {
+        ("l2", "h2")
+    } else if attr & CEXPR_USER != 0 {
+        ("u1", "u2")
+    } else if attr & CEXPR_ROLE != 0 {
+        ("r1", "r2")
+    } else if attr & CEXPR_TYPE != 0 {
+        ("t1", "t2")
+    } else {
+        ("?", "?")
+    }
+}
+
+/// The left-hand operand for a `CEXPR_NAMES` comparison (against a name set).
+fn names_lhs(attr: u32) -> &'static str {
+    let target = attr & (CEXPR_TARGET | CEXPR_XTARGET) != 0;
+    if attr & CEXPR_USER != 0 {
+        if target {
+            "u2"
+        } else {
+            "u1"
+        }
+    } else if attr & CEXPR_ROLE != 0 {
+        if target {
+            "r2"
+        } else {
+            "r1"
+        }
+    } else if target {
+        "t2"
+    } else {
+        "t1"
+    }
+}
+
+fn op_symbol(op: u32) -> &'static str {
+    match op {
+        CEXPR_EQ => "==",
+        CEXPR_NEQ => "!=",
+        CEXPR_DOM => "dom",
+        CEXPR_DOMBY => "domby",
+        CEXPR_INCOMP => "incomp",
+        _ => "?",
+    }
 }
 
 // ---------------------------------------------------------------------------

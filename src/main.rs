@@ -26,7 +26,7 @@ RULE TYPES (choose one or more; the matching rules are printed):
     -X, --xperm            extended-permission (ioctl) rules
         --all-rules        all of the above
 
-FILTERS:
+FILTERS (apply to rules and, where meaningful, to --constrain):
     -s, --source <NAME>    match rules whose source is NAME
     -t, --target <NAME>    match rules whose target is NAME
     -c, --class <NAME>     match rules whose object class is NAME
@@ -40,6 +40,7 @@ INFO (seinfo-style; printed instead of rules):
         --classes          list object classes and their permissions
         --booleans         list booleans and their default state
         --policycaps       list enabled policy capabilities
+        --constrain        list constrain / mlsconstrain statements (filter with -c)
         --genfs            list genfscon entries
         --expand <ATTR>    list the member types of an attribute
 
@@ -68,6 +69,8 @@ struct Config {
     xperm: bool,
     // filters
     query: Query,
+    // rule types (cont.)
+    constrain: bool,
     // info
     stats: bool,
     list_types: bool,
@@ -94,6 +97,7 @@ impl Config {
             || self.list_booleans
             || self.list_policycaps
             || self.list_genfs
+            || self.constrain
             || self.expand_attr.is_some()
     }
 }
@@ -218,6 +222,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
             "--booleans" => cfg.list_booleans = true,
             "--policycaps" => cfg.list_policycaps = true,
             "--genfs" => cfg.list_genfs = true,
+            "--constrain" => cfg.constrain = true,
             "--expand" | "--expand-attr" => {
                 cfg.expand_attr = Some(take_value(&flag, inline, &mut it)?)
             }
@@ -446,6 +451,16 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
             }
         }
     }
+    if cfg.constrain {
+        let class = cfg.query.class.as_deref();
+        let lines: Vec<String> = policy
+            .constraints
+            .iter()
+            .filter(|c| class.is_none_or(|want| c.class == want))
+            .map(|c| c.to_string())
+            .collect();
+        print_rendered(lines, cfg.json);
+    }
     if let Some(attr) = &cfg.expand_attr {
         let members = policy
             .attributes
@@ -460,6 +475,7 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
     Ok(())
 }
 
+/// Print a set of names with a count header (text) or a JSON string array.
 fn print_list(title: &str, mut items: Vec<String>, json_out: bool) {
     items.sort();
     if json_out {
@@ -469,6 +485,20 @@ fn print_list(title: &str, mut items: Vec<String>, json_out: bool) {
         println!("{title} ({}):", items.len());
         for item in items {
             println!("  {item}");
+        }
+    }
+}
+
+/// Print already-rendered statement lines verbatim (text) or as a JSON string
+/// array. Order is preserved — used for listings where order carries meaning
+/// (sensitivities) or matches the policy file (contexts, constraints).
+fn print_rendered(lines: Vec<String>, json_out: bool) {
+    if json_out {
+        let arr = json::Value::Array(lines.into_iter().map(json::Value::Str).collect());
+        println!("{}", arr.render());
+    } else {
+        for line in lines {
+            println!("{line}");
         }
     }
 }
@@ -496,6 +526,7 @@ fn print_stats(p: &Policy) {
     println!("dontaudit rules:   {dontaudit}");
     println!("xperm rules:       {}", p.xperm_rules.len());
     println!("type rules:        {}", p.te_rules.len());
+    println!("constraints:       {}", p.constraints.len());
     println!("genfscon entries:  {}", p.genfs.len());
     println!("policy caps:       {}", p.policycaps.len());
 }
@@ -525,6 +556,7 @@ fn stats_json(p: &Policy) -> json::Value {
         ("dontaudit_rules".into(), Num(dontaudit)),
         ("xperm_rules".into(), Num(p.xperm_rules.len() as i64)),
         ("type_rules".into(), Num(p.te_rules.len() as i64)),
+        ("constraints".into(), Num(p.constraints.len() as i64)),
         ("genfs".into(), Num(p.genfs.len() as i64)),
         ("policycaps".into(), Num(p.policycaps.len() as i64)),
     ])

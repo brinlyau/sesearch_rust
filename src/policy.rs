@@ -175,6 +175,43 @@ impl fmt::Display for Genfs {
     }
 }
 
+/// A `constrain` / `mlsconstrain` statement: a boolean expression that must
+/// hold for the listed permissions on a class to be granted.
+#[derive(Debug, Clone)]
+pub struct Constraint {
+    pub class: String,
+    pub perms: Vec<String>,
+    /// The rendered boolean expression, e.g. `u1 == u2 or t1 == { foo }`.
+    pub expr: String,
+    /// True for `mlsconstrain` (the expression references MLS levels).
+    pub mls: bool,
+    /// True for `validatetrans` / `mlsvalidatetrans` statements.
+    pub validatetrans: bool,
+}
+
+impl fmt::Display for Constraint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let keyword = match (self.validatetrans, self.mls) {
+            (true, true) => "mlsvalidatetrans",
+            (true, false) => "validatetrans",
+            (false, true) => "mlsconstrain",
+            (false, false) => "constrain",
+        };
+        if self.validatetrans {
+            write!(f, "{} {} ({});", keyword, self.class, self.expr)
+        } else {
+            write!(
+                f,
+                "{} {} {{ {} }} ({});",
+                keyword,
+                self.class,
+                self.perms.join(" "),
+                self.expr
+            )
+        }
+    }
+}
+
 /// A fully parsed policy, ready to query.
 #[derive(Debug, Default)]
 pub struct Policy {
@@ -191,6 +228,7 @@ pub struct Policy {
     pub av_rules: Vec<AvRule>,
     pub xperm_rules: Vec<XpermRule>,
     pub te_rules: Vec<TeRule>,
+    pub constraints: Vec<Constraint>,
     pub genfs: Vec<Genfs>,
     pub policycaps: BTreeSet<String>,
     pub role_count: usize,

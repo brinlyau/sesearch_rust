@@ -85,11 +85,17 @@ pub fn minimal_policy() -> Vec<u8> {
     w.u32(1); // value
     w.u32(3); // nprim
     w.u32(3); // nel (perms)
-    w.u32(0); // ncons
+    w.u32(1); // ncons
     w.key("file");
     w.perm("read", 1);
     w.perm("write", 2);
     w.perm("execute", 3);
+    // one constraint: constrain file { write } (u1 == u2)
+    w.u32(0b010); // permission mask: write
+    w.u32(1); // nexpr
+    w.u32(4); // expr_type = CEXPR_ATTR
+    w.u32(1); // attr = CEXPR_USER
+    w.u32(1); // op = CEXPR_EQ
     w.u32(0); // nvalidatetrans (v>=19)
     w.u32(0); // default_user
     w.u32(0); // default_role
