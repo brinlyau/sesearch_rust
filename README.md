@@ -85,7 +85,15 @@ Printed instead of rules:
 | `--classes` | object classes and their permissions |
 | `--booleans` | booleans and default state |
 | `--policycaps` | enabled policy capabilities |
+| `--constrain` | `constrain` / `mlsconstrain` statements (filter with `-c`) |
+| `--sensitivities` | MLS sensitivities |
+| `--categories` | MLS categories |
 | `--genfs` | `genfscon` entries |
+| `--initialsids` | initial SID contexts |
+| `--portcon` | `portcon` entries |
+| `--netifcon` | `netifcon` entries |
+| `--nodecon` | `nodecon` entries |
+| `--fs_use` | `fs_use_xattr` / `_task` / `_trans` entries |
 | `--expand <ATTR>` | the member types of an attribute |
 
 ### Options
@@ -130,6 +138,16 @@ allow rules:       54324
 # What types make up the `domain` attribute?
 $ sesearch_rust --expand domain precompiled_sepolicy
 
+# MLS constraints on the process class (e.g. the mlstrustedsubject rule)
+$ sesearch_rust --constrain -c process precompiled_sepolicy
+mlsconstrain process { dyntransition transition } (h1 == h2 and l1 == l2 or t1 == { ... });
+...
+
+# How filesystems get labeled
+$ sesearch_rust --fs_use precompiled_sepolicy
+fs_use_xattr ext4 labeledfs
+...
+
 # Machine-readable output (--direct so the source is literally `shell`)
 $ sesearch_rust -A -s shell -d --json precompiled_sepolicy | jq '.[0]'
 {
@@ -157,17 +175,23 @@ From the compiled `policydb`:
 - **Type rules**: `type_transition` / `type_member` / `type_change`, plus
   name-based filename transitions (both the legacy and compressed on-disk
   layouts).
-- **Contexts**: `genfscon` entries; policy capabilities.
+- **Constraints**: `constrain` / `mlsconstrain` (and `validatetrans`) — the
+  reverse-Polish expression on disk is reconstructed into a readable infix
+  string (e.g. `h1 == h2 and l1 == l2 or t1 == { ... }`).
+- **MLS**: sensitivities and categories.
+- **Contexts**: `genfscon`, initial SIDs, `portcon`, `netifcon`, `nodecon`
+  (IPv4 and IPv6), and `fs_use_*`; policy capabilities.
 
 ### Known limitations
 
 - **`neverallow`** rules are *not* present in a compiled kernel policy — they're
   compile-time assertions checked by `checkpolicy`/`secilc` and discarded. This
   tool can't show them. (A future CIL/`.te` front end could.)
-- MLS levels/categories and constraint expressions are parsed for correct
-  stream alignment but not surfaced as queryable output.
-- Object contexts other than `genfscon` (ports, nodes, fs_use, …) are skipped
-  (parsed only enough to stay aligned).
+- MLS ranges attached to contexts (the `s0:c0.c1023` part of a label) are parsed
+  for alignment but not rendered — only the type component of each context is
+  surfaced.
+- InfiniBand contexts (`ibpkeycon`, `ibendportcon`) are parsed only enough to
+  stay aligned, not surfaced. (Android policies don't use them.)
 
 ## How it works
 

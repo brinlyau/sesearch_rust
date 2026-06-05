@@ -44,6 +44,11 @@ INFO (seinfo-style; printed instead of rules):
         --sensitivities    list MLS sensitivities
         --categories       list MLS categories
         --genfs            list genfscon entries
+        --initialsids      list initial SID contexts
+        --portcon          list portcon entries
+        --netifcon         list netifcon entries
+        --nodecon          list nodecon entries
+        --fs_use           list fs_use_xattr / _task / _trans entries
         --expand <ATTR>    list the member types of an attribute
 
 OPTIONS:
@@ -83,6 +88,11 @@ struct Config {
     list_genfs: bool,
     list_sensitivities: bool,
     list_categories: bool,
+    list_initialsids: bool,
+    list_portcon: bool,
+    list_netifcon: bool,
+    list_nodecon: bool,
+    list_fsuse: bool,
     expand_attr: Option<String>,
     // output
     json: bool,
@@ -103,6 +113,11 @@ impl Config {
             || self.list_genfs
             || self.list_sensitivities
             || self.list_categories
+            || self.list_initialsids
+            || self.list_portcon
+            || self.list_netifcon
+            || self.list_nodecon
+            || self.list_fsuse
             || self.constrain
             || self.expand_attr.is_some()
     }
@@ -230,6 +245,11 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
             "--genfs" => cfg.list_genfs = true,
             "--sensitivities" | "--sens" => cfg.list_sensitivities = true,
             "--categories" | "--cats" => cfg.list_categories = true,
+            "--initialsids" | "--isids" => cfg.list_initialsids = true,
+            "--portcon" | "--ports" => cfg.list_portcon = true,
+            "--netifcon" => cfg.list_netifcon = true,
+            "--nodecon" => cfg.list_nodecon = true,
+            "--fs_use" | "--fsuse" => cfg.list_fsuse = true,
             "--constrain" => cfg.constrain = true,
             "--expand" | "--expand-attr" => {
                 cfg.expand_attr = Some(take_value(&flag, inline, &mut it)?)
@@ -475,6 +495,21 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
             .collect();
         print_rendered(lines, cfg.json);
     }
+    if cfg.list_initialsids {
+        print_rendered(policy.initial_sids.iter().map(|x| x.to_string()).collect(), cfg.json);
+    }
+    if cfg.list_portcon {
+        print_rendered(policy.portcons.iter().map(|x| x.to_string()).collect(), cfg.json);
+    }
+    if cfg.list_netifcon {
+        print_rendered(policy.netifcons.iter().map(|x| x.to_string()).collect(), cfg.json);
+    }
+    if cfg.list_nodecon {
+        print_rendered(policy.nodecons.iter().map(|x| x.to_string()).collect(), cfg.json);
+    }
+    if cfg.list_fsuse {
+        print_rendered(policy.fs_uses.iter().map(|x| x.to_string()).collect(), cfg.json);
+    }
     if let Some(attr) = &cfg.expand_attr {
         let members = policy
             .attributes
@@ -544,6 +579,11 @@ fn print_stats(p: &Policy) {
     println!("sensitivities:     {}", p.sensitivities.len());
     println!("categories:        {}", p.categories.len());
     println!("genfscon entries:  {}", p.genfs.len());
+    println!("initial SIDs:      {}", p.initial_sids.len());
+    println!("portcon entries:   {}", p.portcons.len());
+    println!("netifcon entries:  {}", p.netifcons.len());
+    println!("nodecon entries:   {}", p.nodecons.len());
+    println!("fs_use entries:    {}", p.fs_uses.len());
     println!("policy caps:       {}", p.policycaps.len());
 }
 
@@ -576,6 +616,11 @@ fn stats_json(p: &Policy) -> json::Value {
         ("sensitivities".into(), Num(p.sensitivities.len() as i64)),
         ("categories".into(), Num(p.categories.len() as i64)),
         ("genfs".into(), Num(p.genfs.len() as i64)),
+        ("initial_sids".into(), Num(p.initial_sids.len() as i64)),
+        ("portcons".into(), Num(p.portcons.len() as i64)),
+        ("netifcons".into(), Num(p.netifcons.len() as i64)),
+        ("nodecons".into(), Num(p.nodecons.len() as i64)),
+        ("fs_uses".into(), Num(p.fs_uses.len() as i64)),
         ("policycaps".into(), Num(p.policycaps.len() as i64)),
     ])
 }

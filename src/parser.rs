@@ -85,6 +85,57 @@ const CEXPR_INCOMP: u32 = 5;
 // type_datum property flags (version >= BOUNDARY).
 const TYPE_PROP_ATTRIBUTE: u32 = 0x0002;
 
+// SECURITY_FS_USE_* behaviors.
+const FS_USE_NAMES: &[&str] = &[
+    "fs_use_none",  // 0 (unused placeholder)
+    "fs_use_xattr", // 1
+    "fs_use_trans", // 2
+    "fs_use_task",  // 3
+];
+
+/// The standard initial-SID names, indexed by 1-based SID value (matching the
+/// order of Android's `initial_sids` file). Out-of-range SIDs fall back to a
+/// numeric label.
+const INITIAL_SID_NAMES: &[&str] = &[
+    "kernel",
+    "security",
+    "unlabeled",
+    "fs",
+    "file",
+    "file_labels",
+    "init",
+    "any_socket",
+    "port",
+    "netif",
+    "netmsg",
+    "node",
+    "igmp_packet",
+    "icmp_socket",
+    "tcp_socket",
+    "sysctl_modprobe",
+    "sysctl",
+    "sysctl_fs",
+    "sysctl_kernel",
+    "sysctl_net",
+    "sysctl_net_unix",
+    "sysctl_vm",
+    "sysctl_dev",
+    "kmod",
+    "policy",
+    "scmp_packet",
+    "devnull",
+];
+
+fn protocol_name(proto: u32) -> String {
+    match proto {
+        6 => "tcp".to_string(),
+        17 => "udp".to_string(),
+        33 => "dccp".to_string(),
+        132 => "sctp".to_string(),
+        other => format!("proto/{}", other),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Intermediate symbol-table structures
 // ---------------------------------------------------------------------------
@@ -342,7 +393,7 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
     for ocon_idx in 0..oclass_num {
         let nel = r.read_u32()?;
         for _ in 0..nel {
-            skip_ocon_entry(&mut r, ocon_idx, mls)?;
+            read_ocon_entry(&mut r, ocon_idx, mls, &ctx, &mut policy)?;
         }
     }
 
@@ -989,39 +1040,93 @@ fn read_filename_trans(
     Ok(())
 }
 
-fn skip_ocon_entry(r: &mut Reader, idx: usize, mls: bool) -> Result<(), String> {
+fn read_ocon_entry(
+    r: &mut Reader,
+    idx: usize,
+    mls: bool,
+    ctx: &Ctx,
+    policy: &mut Policy,
+) -> Result<(), String> {
     match idx {
         0 => {
             // ISID: sid(u32) + context
-            r.skip(4)?;
-            r.skip_context(mls)?;
+            let sid = r.read_u32()?;
+            let ty = r.read_context_type(mls)?;
+            let name = INITIAL_SID_NAMES
+                .get(sid.wrapping_sub(1) as usize)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("sid#{}", sid));
+            policy.initial_sids.push(InitialSid {
+                name,
+                context_type: ctx.type_name(ty),
+            });
         }
-        1 | 3 => {
-            // FS / NETIF: name + context + context
+        1 => {
+            // FS (fscon, legacy): name + context + context
             let _name = r.read_string()?;
             r.skip_context(mls)?;
             r.skip_context(mls)?;
         }
         2 => {
             // PORT: protocol + low + high + context
-            r.skip(12)?;
-            r.skip_context(mls)?;
+            let protocol = r.read_u32()?;
+            let low = r.read_u32()?;
+            let high = r.read_u32()?;
+            let ty = r.read_context_type(mls)?;
+            policy.portcons.push(PortCon {
+                protocol: protocol_name(protocol),
+                low,
+                high,
+                context_type: ctx.type_name(ty),
+            });
+        }
+        3 => {
+            // NETIF: name + interface context + packet context
+            let name = r.read_string()?;
+            let if_ty = r.read_context_type(mls)?;
+            let pkt_ty = r.read_context_type(mls)?;
+            policy.netifcons.push(NetifCon {
+                name,
+                if_type: ctx.type_name(if_ty),
+                packet_type: ctx.type_name(pkt_ty),
+            });
         }
         4 => {
-            // NODE: addr + mask + context
-            r.skip(8)?;
-            r.skip_context(mls)?;
+            // NODE: addr(u32) + mask(u32) + context (IPv4, network byte order)
+            let addr = r.read_u32()?;
+            let mask = r.read_u32()?;
+            let ty = r.read_context_type(mls)?;
+            policy.nodecons.push(NodeCon {
+                addr: ipv4(addr),
+                mask: ipv4(mask),
+                context_type: ctx.type_name(ty),
+            });
         }
         5 => {
-            // FSUSE: behavior + name + context
-            let _behavior = r.read_u32()?;
-            let _name = r.read_string()?;
-            r.skip_context(mls)?;
+            // FSUSE: behavior + fstype name + context
+            let behavior = r.read_u32()?;
+            let fstype = r.read_string()?;
+            let ty = r.read_context_type(mls)?;
+            let behavior = FS_USE_NAMES
+                .get(behavior as usize)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("fs_use_{}", behavior));
+            policy.fs_uses.push(FsUse {
+                behavior,
+                fstype,
+                context_type: ctx.type_name(ty),
+            });
         }
         6 => {
-            // NODE6: addr(4*u32) + mask(4*u32) + context
-            r.skip(32)?;
-            r.skip_context(mls)?;
+            // NODE6: addr(4*u32) + mask(4*u32) + context (IPv6)
+            let addr = read_u32x4(r)?;
+            let mask = read_u32x4(r)?;
+            let ty = r.read_context_type(mls)?;
+            policy.nodecons.push(NodeCon {
+                addr: ipv6(addr),
+                mask: ipv6(mask),
+                context_type: ctx.type_name(ty),
+            });
         }
         7 => {
             // IBPKEY: subnet_prefix(u64) + low(u32) + high(u32) + context
@@ -1037,6 +1142,31 @@ fn skip_ocon_entry(r: &mut Reader, idx: usize, mls: bool) -> Result<(), String> 
         _ => return Err(format!("unknown object-context index {}", idx)),
     }
     Ok(())
+}
+
+fn read_u32x4(r: &mut Reader) -> Result<[u32; 4], String> {
+    Ok([r.read_u32()?, r.read_u32()?, r.read_u32()?, r.read_u32()?])
+}
+
+/// Format an IPv4 address stored in network byte order.
+fn ipv4(addr: u32) -> String {
+    let b = addr.to_be_bytes();
+    format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+}
+
+/// Format an IPv6 address from four network-byte-order words (no `::` folding).
+fn ipv6(words: [u32; 4]) -> String {
+    let mut groups = [0u16; 8];
+    for (i, w) in words.iter().enumerate() {
+        let b = w.to_be_bytes();
+        groups[i * 2] = u16::from_be_bytes([b[0], b[1]]);
+        groups[i * 2 + 1] = u16::from_be_bytes([b[2], b[3]]);
+    }
+    groups
+        .iter()
+        .map(|g| format!("{:x}", g))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,5 +1230,46 @@ mod tests {
         assert_eq!(allow.class, "file");
         assert!(allow.perms.contains(&"read".to_string()));
         assert!(allow.perms.contains(&"write".to_string()));
+
+        // constraint: constrain file { write } (u1 == u2)
+        assert_eq!(p.constraints.len(), 1);
+        let c = &p.constraints[0];
+        assert_eq!(c.class, "file");
+        assert_eq!(c.perms, vec!["write".to_string()]);
+        assert_eq!(c.expr, "u1 == u2");
+        assert!(!c.mls);
+        assert!(!c.validatetrans);
+
+        // initial SID: sid kernel source_t
+        assert_eq!(p.initial_sids.len(), 1);
+        assert_eq!(p.initial_sids[0].name, "kernel");
+        assert_eq!(p.initial_sids[0].context_type, "source_t");
+    }
+
+    #[test]
+    fn renders_constraint_expression() {
+        // (t1 != { a } and r1 == r2)  — RPN: NAMES, ATTR, AND
+        let exprs = vec![
+            RawExpr { expr_type: CEXPR_NAMES, attr: CEXPR_TYPE, op: CEXPR_NEQ, names: vec![1] },
+            RawExpr { expr_type: CEXPR_ATTR, attr: CEXPR_ROLE, op: CEXPR_EQ, names: vec![] },
+            RawExpr { expr_type: CEXPR_AND, attr: 0, op: 0, names: vec![] },
+        ];
+        let mut types = HashMap::new();
+        types.insert(1u32, "a".to_string());
+        let names = NameMaps { types: &types, roles: &HashMap::new(), users: &HashMap::new() };
+        let (expr, mls) = render_constraint_expr(&exprs, &names);
+        assert_eq!(expr, "t1 != a and r1 == r2");
+        assert!(!mls);
+
+        // MLS: l1 dom l2
+        let mls_exprs = vec![RawExpr {
+            expr_type: CEXPR_ATTR,
+            attr: CEXPR_L1L2,
+            op: CEXPR_DOM,
+            names: vec![],
+        }];
+        let (expr, mls) = render_constraint_expr(&mls_exprs, &names);
+        assert_eq!(expr, "l1 dom l2");
+        assert!(mls);
     }
 }

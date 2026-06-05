@@ -66,7 +66,7 @@ pub fn minimal_policy() -> Vec<u8> {
     w.u32(30); // version
     w.u32(0); // config: MLS off
     w.u32(8); // sym_num
-    w.u32(0); // oclass_num (no object contexts)
+    w.u32(1); // oclass_num (object-context class 0 = initial SIDs)
 
     // ---- Leading ebitmaps (v30 >= POLCAP(22) and PERMISSIVE(23)) ----
     w.ebitmap(64, &[(0, 0b11)]); // policycaps: bits 0,1
@@ -152,7 +152,13 @@ pub fn minimal_policy() -> Vec<u8> {
     w.u32(0); // role allow nel
     w.u32(0); // filename transition nel (v>=25, < COMP_FTRANS)
 
-    // No object contexts (oclass_num == 0).
+    // ---- Object contexts: one initial SID (class 0) ----
+    w.u32(1); // nel for ocon class 0 (ISID)
+    w.u32(1); // sid = 1 (kernel)
+    w.u32(0); // context user
+    w.u32(0); // context role
+    w.u32(1); // context type = source_t
+
     w.u32(0); // genfs nel
 
     // No MLS range transitions (MLS off).

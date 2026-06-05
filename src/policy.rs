@@ -175,6 +175,84 @@ impl fmt::Display for Genfs {
     }
 }
 
+/// An initial Security Identifier (SID) binding, e.g. `sid kernel kernel`.
+#[derive(Debug, Clone)]
+pub struct InitialSid {
+    pub name: String,
+    pub context_type: String,
+}
+
+impl fmt::Display for InitialSid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "sid {} {}", self.name, self.context_type)
+    }
+}
+
+/// A `portcon` binding for a network port range.
+#[derive(Debug, Clone)]
+pub struct PortCon {
+    pub protocol: String,
+    pub low: u32,
+    pub high: u32,
+    pub context_type: String,
+}
+
+impl fmt::Display for PortCon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.low == self.high {
+            write!(f, "portcon {} {} {}", self.protocol, self.low, self.context_type)
+        } else {
+            write!(
+                f,
+                "portcon {} {}-{} {}",
+                self.protocol, self.low, self.high, self.context_type
+            )
+        }
+    }
+}
+
+/// A `netifcon` binding for a network interface.
+#[derive(Debug, Clone)]
+pub struct NetifCon {
+    pub name: String,
+    pub if_type: String,
+    pub packet_type: String,
+}
+
+impl fmt::Display for NetifCon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "netifcon {} {} {}", self.name, self.if_type, self.packet_type)
+    }
+}
+
+/// A `nodecon` binding for a network address/mask.
+#[derive(Debug, Clone)]
+pub struct NodeCon {
+    pub addr: String,
+    pub mask: String,
+    pub context_type: String,
+}
+
+impl fmt::Display for NodeCon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "nodecon {} {} {}", self.addr, self.mask, self.context_type)
+    }
+}
+
+/// An `fs_use_*` binding (xattr / task / trans labeling behavior).
+#[derive(Debug, Clone)]
+pub struct FsUse {
+    pub behavior: String,
+    pub fstype: String,
+    pub context_type: String,
+}
+
+impl fmt::Display for FsUse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.behavior, self.fstype, self.context_type)
+    }
+}
+
 /// A `constrain` / `mlsconstrain` statement: a boolean expression that must
 /// hold for the listed permissions on a class to be granted.
 #[derive(Debug, Clone)]
@@ -234,6 +312,11 @@ pub struct Policy {
     pub te_rules: Vec<TeRule>,
     pub constraints: Vec<Constraint>,
     pub genfs: Vec<Genfs>,
+    pub initial_sids: Vec<InitialSid>,
+    pub portcons: Vec<PortCon>,
+    pub netifcons: Vec<NetifCon>,
+    pub nodecons: Vec<NodeCon>,
+    pub fs_uses: Vec<FsUse>,
     pub policycaps: BTreeSet<String>,
     pub role_count: usize,
     pub user_count: usize,
