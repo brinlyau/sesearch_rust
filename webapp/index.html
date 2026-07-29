@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sepolicy workbench</title>
+<style>
+  :root {
+    --bg: #0e1626;
+    --panel: #141f33;
+    --inset: #0a111e;
+    --line: #24344d;
+    --text: #d8e2f0;
+    --dim: #6f83a1;
+    --amber: #f5b942;
+    --allow: #7ce38b;
+    --auditallow: #ffd479;
+    --dontaudit: #93a5bd;
+    --te: #7fd6e8;
+    --xperm: #c9a6f5;
+    --danger: #ff8484;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --display: "Avenir Next Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+  }
+  a { color: var(--amber); }
+
+  /* ---------- masthead ---------- */
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 14px 20px 10px;
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-family: var(--display);
+    font-weight: 800;
+    font-size: 26px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    line-height: 1;
+  }
+  header h1 .accent { color: var(--amber); }
+  header .tagline { color: var(--dim); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header .filemeta { color: var(--dim); font-size: 12px; }
+  header .filemeta b { color: var(--text); font-weight: 600; }
+  button, .btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+  button:hover, .btn:hover { border-color: var(--amber); }
+  button:focus-visible, input:focus-visible, .btn:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 1px;
+  }
+
+  /* ---------- stats strip ---------- */
+  #statstrip {
+    display: none;
+    gap: 18px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  #statstrip b { color: var(--text); font-weight: 600; }
+  #statstrip .mlsflag { color: var(--te); }
+
+  /* ---------- layout ---------- */
+  #app { display: none; flex: 1; min-height: 0; }
+  #app.loaded { display: flex; }
+  aside {
+    width: 250px;
+    flex: none;
+    overflow-y: auto;
+    border-right: 1px solid var(--line);
+    padding: 14px 16px 24px;
+  }
+  aside h2 {
+    font-family: var(--display);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin: 18px 0 8px;
+  }
+  aside h2:first-child { margin-top: 0; }
+  .kindrow { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+  .kindrow input { accent-color: var(--amber); }
+  .kindrow label { cursor: pointer; }
+  .kindrow .k-allow { color: var(--allow); }
+  .kindrow .k-auditallow { color: var(--auditallow); }
+  .kindrow .k-dontaudit { color: var(--dontaudit); }
+  .kindrow .k-te { color: var(--te); }
+  .kindrow .k-xperm { color: var(--xperm); }
+  .field { margin: 8px 0; }
+  .field label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 3px; }
+  .field input[type="text"], .field input[type="number"] {
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    background: var(--inset);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 5px 8px;
+  }
+  .field input::placeholder { color: #465a77; }
+  #infonav { display: flex; flex-direction: column; gap: 2px; }
+  #infonav button {
+    text-align: left;
+    background: none;
+    border: 1px solid transparent;
+    padding: 3px 8px;
+    color: var(--dim);
+  }
+  #infonav button:hover { color: var(--text); border-color: var(--line); }
+  #infonav button.active { color: var(--amber); border-color: var(--line); background: var(--panel); }
+
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* ---------- the command echo (signature) ---------- */
+  #cmdbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 9px 20px;
+    background: var(--inset);
+    border-bottom: 1px solid var(--line);
+    color: var(--amber);
+    white-space: nowrap;
+    overflow-x: auto;
+  }
+  #cmdbar .prompt { color: var(--dim); user-select: none; }
+  #cmdbar button { flex: none; margin-left: auto; color: var(--dim); padding: 2px 8px; }
+  #cmdbar button:hover { color: var(--text); }
+
+  #resultmeta {
+    padding: 7px 20px;
+    color: var(--dim);
+    font-size: 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  #resultmeta .trunc { color: var(--auditallow); }
+  #resultmeta button { padding: 1px 8px; font-size: 11px; }
+
+  #output {
+    flex: 1;
+    overflow: auto;
+    padding: 12px 20px 40px;
+    white-space: pre;
+    line-height: 1.55;
+    tab-size: 4;
+  }
+  #output .k-allow { color: var(--allow); }
+  #output .k-auditallow { color: var(--auditallow); }
+  #output .k-dontaudit { color: var(--dontaudit); }
+  #output .k-te { color: var(--te); }
+  #output .k-xperm { color: var(--xperm); }
+  #output .k-constrain { color: var(--amber); }
+  #output .cls { color: var(--amber); }
+  #output .str { color: var(--allow); }
+  #output .dim { color: var(--dim); }
+  #output .num { color: var(--te); }
+  #output .hdr { color: var(--dim); }
+  #output details { margin: 0; }
+  #output summary { cursor: pointer; color: var(--text); }
+  #output summary .count { color: var(--dim); }
+  #output details > div { padding-left: 3ch; color: var(--dim); }
+
+  /* ---------- drop zone (pre-load state) ---------- */
+  #dropzone {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin: 24px;
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    color: var(--dim);
+    text-align: center;
+    padding: 20px;
+    cursor: pointer;
+  }
+  #dropzone.drag { border-color: var(--amber); color: var(--text); }
+  #dropzone .big {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  #dropzone code { color: var(--amber); }
+  #error {
+    display: none;
+    margin: 12px 20px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--danger);
+    border-radius: 3px;
+    color: var(--danger);
+  }
+
+  @media (max-width: 760px) {
+    #app.loaded { flex-direction: column; }
+    aside { width: auto; border-right: none; border-bottom: 1px solid var(--line); max-height: 45vh; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    #dropzone { transition: border-color 120ms ease, color 120ms ease; }
+    #infonav button { transition: color 120ms ease; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>sepolicy<span class="accent">&nbsp;workbench</span></h1>
+  <span class="tagline">query compiled SELinux kernel policies — parsed locally, nothing leaves this machine</span>
+  <span class="spacer"></span>
+  <span class="filemeta" id="filemeta"></span>
+  <button id="openbtn" type="button">Open policy…</button>
+  <input type="file" id="fileinput" hidden>
+</header>
+
+<div id="statstrip"></div>
+<div id="error" role="alert"></div>
+
+<div id="dropzone" tabindex="0" role="button" aria-label="Open a policy file">
+  <div class="big">Drop a compiled policy here</div>
+  <div>an Android <code>sepolicy</code> / <code>precompiled_sepolicy</code>, or <code>/sys/fs/selinux/policy</code> pulled from a device</div>
+  <div>…or click to browse. The file is parsed in this tab; it is never uploaded.</div>
+</div>
+
+<div id="app">
+  <aside>
+    <h2>Rule query</h2>
+    <div class="kindrow"><input type="checkbox" id="k-allow" checked><label for="k-allow" class="k-allow">allow</label></div>
+    <div class="kindrow"><input type="checkbox" id="k-auditallow"><label for="k-auditallow" class="k-auditallow">auditallow</label></div>
+    <div class="kindrow"><input type="checkbox" id="k-dontaudit"><label for="k-dontaudit" class="k-dontaudit">dontaudit</label></div>
+    <div class="kindrow"><input type="checkbox" id="k-te"><label for="k-te" class="k-te">type_transition / member / change</label></div>
+    <div class="kindrow"><input type="checkbox" id="k-xperm"><label for="k-xperm" class="k-xperm">xperm (ioctl)</label></div>
+
+    <div class="field"><label for="f-source">source type or attribute (-s)</label>
+      <input type="text" id="f-source" list="dl-types" placeholder="untrusted_app" spellcheck="false"></div>
+    <div class="field"><label for="f-target">target type or attribute (-t)</label>
+      <input type="text" id="f-target" list="dl-types" placeholder="shell_data_file" spellcheck="false"></div>
+    <div class="field"><label for="f-class">object class (-c)</label>
+      <input type="text" id="f-class" list="dl-classes" placeholder="file" spellcheck="false"></div>
+    <div class="field"><label for="f-perm">permissions, any-of (-p)</label>
+      <input type="text" id="f-perm" list="dl-perms" placeholder="read,execute" spellcheck="false"></div>
+    <div class="kindrow"><input type="checkbox" id="f-direct"><label for="f-direct">literal match only (-d, no attribute expansion)</label></div>
+    <div class="field"><label for="f-limit">show at most (-n)</label>
+      <input type="number" id="f-limit" value="2000" min="1" step="500"></div>
+
+    <h2>Info views</h2>
+    <div id="infonav"></div>
+
+    <datalist id="dl-types"></datalist>
+    <datalist id="dl-classes"></datalist>
+    <datalist id="dl-perms"></datalist>
+  </aside>
+
+  <main>
+    <div id="cmdbar"><span class="prompt">$</span><span id="cmdtext"></span><button id="copycmd" type="button" title="Copy command">copy</button></div>
+    <div id="resultmeta"></div>
+    <div id="output" tabindex="0"></div>
+  </main>
+</div>
+
+<script src="sepolicy.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
