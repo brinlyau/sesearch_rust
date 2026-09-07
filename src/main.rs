@@ -170,6 +170,8 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
     let data = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let policy = parser::parse(&data)?;
 
+    validate_query(&cfg, &policy)?;
+
     if !cfg.any_rule_type() && !cfg.any_info() {
         return Err("nothing to do: specify a rule type (e.g. -A) or an info flag (e.g. --stats). See --help".into());
     }
@@ -181,6 +183,44 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
         print_rules(&cfg, &policy);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn validate_query(cfg: &Config, p: &Policy) -> Result<(), String> {
+    let mut names: Vec<String> = p.types.iter().cloned().collect();
+    names.extend(p.attributes.keys().cloned());
+    for (label, value) in [("source", cfg.query.source.as_deref()), ("target", cfg.query.target.as_deref())] {
+        if let Some(v) = value { if !names.iter().any(|n| n == v) { return Err(unknown_filter(label, v, &names)); } }
+    }
+    if let Some(v) = cfg.query.class.as_deref() {
+        let classes: Vec<String> = p.classes.keys().cloned().collect();
+        if !classes.iter().any(|n| n == v) { return Err(unknown_filter("class", v, &classes)); }
+    }
+    let perms: Vec<String> = p.classes.values().flatten().cloned().collect();
+    for v in &cfg.query.perms { if !perms.iter().any(|n| n == v) { return Err(unknown_filter("permission", v, &perms)); } }
+    if let Some(v) = cfg.expand_attr.as_deref() {
+        if !p.attributes.contains_key(v) { return Err(unknown_filter("attribute", v, &p.attributes.keys().cloned().collect::<Vec<_>>())); }
+    }
+    Ok(())
+}
+
+fn unknown_filter(kind: &str, value: &str, candidates: &[String]) -> String {
+    let mut ranked: Vec<(usize, &str)> = candidates.iter().map(|c| (edit_distance(value, c), c.as_str())).collect();
+    ranked.sort_by_key(|x| x.0);
+    let suggestion = ranked.first().filter(|x| x.0 <= value.len().max(x.1.len()) / 2).map(|x| format!(" did you mean: {}?", x.1)).unwrap_or_default();
+    format!("unknown {kind} {value}.{suggestion}")
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.bytes().enumerate() {
+        let mut prev = row[0]; row[0] = i + 1;
+        for (j, cb) in b.bytes().enumerate() {
+            let old = row[j + 1];
+            row[j + 1] = (row[j + 1] + 1).min(row[j] + 1).min(prev + usize::from(ca != cb));
+            prev = old;
+        }
+    }
+    row[b.len()]
 }
 
 fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
