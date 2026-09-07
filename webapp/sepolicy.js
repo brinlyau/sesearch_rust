@@ -879,7 +879,8 @@
       target: tgt,
       class: cls.name,
       perms: perms,
-      conditional: conditional,
+      conditional: true,
+      conditionalBranch: conditional,
     });
   }
 
@@ -893,7 +894,7 @@
       var trueNel = r.u32();
       for (var j = 0; j < trueNel; j++) readAvtabEntry(r, ctx, policy, true);
       var falseNel = r.u32();
-      for (j = 0; j < falseNel; j++) readAvtabEntry(r, ctx, policy, true);
+      for (j = 0; j < falseNel; j++) readAvtabEntry(r, ctx, policy, false);
     }
   }
 
@@ -1134,7 +1135,33 @@
     if (m && m.has(filter)) return true;
     m = policy.attributes.get(filter);
     if (m && m.has(operand)) return true;
+    // If both operands are attributes, match when their concrete type sets
+    // overlap.  This mirrors the Rust query engine's semantic behavior.
+    var operandMembers = policy.attributes.get(operand);
+    var filterMembers = policy.attributes.get(filter);
+    if (operandMembers && filterMembers) {
+      var found = false;
+      operandMembers.forEach(function (member) {
+        if (filterMembers.has(member)) found = true;
+      });
+      if (found) return true;
+    }
     return false;
+  }
+
+  function matchReason(policy, filter, operand, direct) {
+    if (!filter || filter === operand || direct) return null;
+    var m = policy.attributes.get(operand);
+    if (m && m.has(filter)) return operand + ' contains ' + filter;
+    m = policy.attributes.get(filter);
+    if (m && m.has(operand)) return filter + ' contains ' + operand;
+    var a = policy.attributes.get(operand), b = policy.attributes.get(filter);
+    if (a && b) {
+      var shared = null;
+      a.forEach(function (type) { if (shared === null && b.has(type)) shared = type; });
+      if (shared !== null) return 'both attributes contain ' + shared;
+    }
+    return null;
   }
 
   // query: {source, target, class, perms: [], direct: bool} — empty-string /
@@ -1207,6 +1234,7 @@
     matchesAv: matchesAv,
     matchesXperm: matchesXperm,
     matchesTe: matchesTe,
+    matchReason: matchReason,
     format: {
       avRule: formatAvRule,
       xpermRule: formatXpermRule,

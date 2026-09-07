@@ -49,6 +49,7 @@ INFO (seinfo-style; printed instead of rules):
         --netifcon         list netifcon entries
         --nodecon          list nodecon entries
         --fs_use           list fs_use_xattr / _task / _trans entries
+        --permissive       list domains marked permissive
         --expand <ATTR>    list the member types of an attribute
 
 OPTIONS:
@@ -93,6 +94,7 @@ struct Config {
     list_netifcon: bool,
     list_nodecon: bool,
     list_fsuse: bool,
+    list_permissive: bool,
     expand_attr: Option<String>,
     // output
     json: bool,
@@ -118,6 +120,7 @@ impl Config {
             || self.list_netifcon
             || self.list_nodecon
             || self.list_fsuse
+            || self.list_permissive
             || self.constrain
             || self.expand_attr.is_some()
     }
@@ -250,6 +253,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
             "--netifcon" => cfg.list_netifcon = true,
             "--nodecon" => cfg.list_nodecon = true,
             "--fs_use" | "--fsuse" => cfg.list_fsuse = true,
+            "--permissive" => cfg.list_permissive = true,
             "--constrain" => cfg.constrain = true,
             "--expand" | "--expand-attr" => {
                 cfg.expand_attr = Some(take_value(&flag, inline, &mut it)?)
@@ -349,6 +353,12 @@ fn av_json(r: &policy::AvRule) -> json::Value {
             Array(r.perms.iter().cloned().map(Str).collect()),
         ),
         ("conditional".into(), Bool(r.conditional)),
+        ("conditional_branch".into(), Str(match r.conditional_branch {
+            Some(true) => "true".into(),
+            Some(false) => "false".into(),
+            None => "unconditional".into(),
+        })),
+        ("conditional_expr".into(), Str(r.conditional_expr.clone().unwrap_or_default())),
     ])
 }
 
@@ -509,6 +519,9 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
     }
     if cfg.list_fsuse {
         print_rendered(policy.fs_uses.iter().map(|x| x.to_string()).collect(), cfg.json);
+    }
+    if cfg.list_permissive {
+        print_list("Permissive types", policy.permissive_types.iter().cloned().collect(), cfg.json);
     }
     if let Some(attr) = &cfg.expand_attr {
         let members = policy

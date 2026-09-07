@@ -36,6 +36,8 @@ pub struct AvRule {
     pub perms: Vec<String>,
     /// True when the rule lives inside a conditional (`if`) block.
     pub conditional: bool,
+    pub conditional_branch: Option<bool>,
+    pub conditional_expr: Option<String>,
 }
 
 impl fmt::Display for AvRule {
@@ -49,8 +51,9 @@ impl fmt::Display for AvRule {
             self.class,
             self.perms.join(" ")
         )?;
-        if self.conditional {
-            write!(f, "  # conditional")?;
+        if let Some(branch) = self.conditional_branch {
+            write!(f, "  # conditional ({})", if branch { "true" } else { "false" })?;
+            if let Some(expr) = &self.conditional_expr { write!(f, " if {}", expr)?; }
         }
         Ok(())
     }
@@ -318,6 +321,8 @@ pub struct Policy {
     pub nodecons: Vec<NodeCon>,
     pub fs_uses: Vec<FsUse>,
     pub policycaps: BTreeSet<String>,
+    /// Domains marked permissive in the compiled policy.
+    pub permissive_types: BTreeSet<String>,
     pub role_count: usize,
     pub user_count: usize,
 }
@@ -370,6 +375,16 @@ impl Query {
         }
         if let Some(members) = policy.attributes.get(filter) {
             if members.contains(operand) {
+                return true;
+            }
+        }
+        // When both names are attributes, their denotations overlap if they
+        // share at least one concrete type.  A rule written on either
+        // attribute therefore applies to a query for the other attribute.
+        if let (Some(operand_members), Some(filter_members)) =
+            (policy.attributes.get(operand), policy.attributes.get(filter))
+        {
+            if operand_members.iter().any(|member| filter_members.contains(member)) {
                 return true;
             }
         }
@@ -443,6 +458,8 @@ mod tests {
             class: c.into(),
             perms: perms.iter().map(|x| x.to_string()).collect(),
             conditional: false,
+            conditional_branch: None,
+            conditional_expr: None,
         }
     }
 

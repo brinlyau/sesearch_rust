@@ -233,7 +233,7 @@
       '<span class="dim">:</span><span class="cls">' + esc(r.class) + '</span>' +
       ' <span class="dim">{</span> ' + esc(r.perms.join(' ')) +
       ' <span class="dim">};</span>' +
-      (r.conditional ? '  <span class="dim"># conditional</span>' : '');
+      (r.conditional ? '  <span class="dim"># conditional (' + (r.conditionalBranch ? 'true' : 'false') + ')</span>' : '');
   }
 
   function xpermHtml(r) {
@@ -277,7 +277,16 @@
   // ---- JSON shapes matching the CLI's --json output ----
 
   function avJson(r) {
-    return { rule_type: r.kind, source: r.source, target: r.target, class: r.class, perms: r.perms, conditional: r.conditional };
+    return { rule_type: r.kind, source: r.source, target: r.target, class: r.class, perms: r.perms, conditional: r.conditional, conditional_branch: r.conditionalBranch };
+  }
+
+  function reasonHtml(query, r) {
+    var reasons = [];
+    var s = SePolicy.matchReason(policy, query.source, r.source, query.direct);
+    var t = SePolicy.matchReason(policy, query.target, r.target, query.direct);
+    if (s) reasons.push('source: ' + s);
+    if (t) reasons.push('target: ' + t);
+    return reasons.length ? '<span class="dim">  # matched via ' + esc(reasons.join('; ')) + '</span>' : '';
   }
   function xpermJson(r) {
     return { rule_type: r.kind, source: r.source, target: r.target, class: r.class, op: r.op, ranges: r.ranges };
@@ -299,7 +308,8 @@
     policy.avRules.forEach(function (r) {
       var want = r.kind === 'allow' ? q.allow : r.kind === 'auditallow' ? q.auditallow : q.dontaudit;
       if (want && SePolicy.matchesAv(policy, query, r)) {
-        items.push([SePolicy.format.avRule(r), avHtml(r), avJson(r)]);
+        var j = avJson(r); var why = reasonHtml(query, r); if (why) j.match_reason = why.replace(/<[^>]+>/g, '').replace(/^\s*# matched via /, '');
+        items.push([SePolicy.format.avRule(r), avHtml(r) + why, j]);
       }
     });
     if (q.xperm) {

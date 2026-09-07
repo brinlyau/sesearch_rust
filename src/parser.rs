@@ -216,9 +216,7 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             policy.policycaps.insert(policycap_name(bit));
         }
     }
-    if version >= V_PERMISSIVE {
-        r.skip_ebitmap()?; // permissive map (per-type permissive flags)
-    }
+    let permissive_bits = if version >= V_PERMISSIVE { r.read_ebitmap()? } else { Vec::new() };
     if version >= V_NEVERAUDIT {
         r.skip_ebitmap()?; // never-audit map
     }
@@ -230,6 +228,7 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
     let mut type_val_to_name: HashMap<u32, String> = HashMap::new();
     let mut role_val_to_name: HashMap<u32, String> = HashMap::new();
     let mut user_val_to_name: HashMap<u32, String> = HashMap::new();
+    let mut bool_names: HashMap<u32, String> = HashMap::new();
     let mut attr_names: BTreeSet<String> = BTreeSet::new();
     let mut types_nprim: usize = 0;
 
@@ -279,7 +278,8 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             }
             SYM_BOOLS => {
                 for _ in 0..nel {
-                    let (name, state) = read_bool(&mut r)?;
+                    let (name, state, value) = read_bool(&mut r)?;
+                    bool_names.insert(value, name.clone());
                     policy.booleans.insert(name, state);
                 }
             }
@@ -360,12 +360,18 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
     let ctx = Ctx {
         type_map: &type_val_to_name,
         class_map: &class_map,
+        bool_map: &bool_names,
     };
+    for bit in permissive_bits {
+        if let Some(name) = type_val_to_name.get(&(bit + 1)) {
+            policy.permissive_types.insert(name.clone());
+        }
+    }
 
     // ---- Access-vector table ----
     let nel = r.read_u32()?;
     for _ in 0..nel {
-        read_avtab_entry(&mut r, &ctx, &mut policy, false)?;
+        read_avtab_entry(&mut r, &ctx, &mut policy, None)?;
     }
 
     // ---- Conditional rules ----
@@ -478,6 +484,7 @@ fn policycap_name(bit: u32) -> String {
 struct Ctx<'a> {
     type_map: &'a HashMap<u32, String>,
     class_map: &'a HashMap<u32, ResolvedClass>,
+    bool_map: &'a HashMap<u32, String>,
 }
 
 impl Ctx<'_> {
@@ -651,12 +658,12 @@ fn read_user(r: &mut Reader, version: u32, mls: bool) -> Result<(String, u32), S
     Ok((name, value))
 }
 
-fn read_bool(r: &mut Reader) -> Result<(String, bool), String> {
+fn read_bool(r: &mut Reader) -> Result<(String, bool, u32), String> {
     let len = r.read_u32()? as usize;
-    let _value = r.read_u32()?;
+    let value = r.read_u32()?;
     let state = r.read_u32()? != 0;
     let name = r.read_key(len)?;
-    Ok((name, state))
+    Ok((name, state, value))
 }
 
 /// A sensitivity datum; returns its name unless it's an alias.
@@ -837,7 +844,7 @@ fn read_avtab_entry(
     r: &mut Reader,
     ctx: &Ctx,
     policy: &mut Policy,
-    conditional: bool,
+    conditional: Option<(bool, String)>,
 ) -> Result<(), String> {
     let source = r.read_u16()? as u32;
     let target = r.read_u16()? as u32;
@@ -925,10 +932,10 @@ fn read_avtab_entry(
     }
 
     if specified & AVTAB_ALLOWED != 0 {
-        push_av(policy, AvKind::Allow, src, tgt, class, datum, conditional);
+        push_av(policy, AvKind::Allow, src, tgt, class, datum, conditional.clone());
     }
     if specified & AVTAB_AUDITALLOW != 0 {
-        push_av(policy, AvKind::AuditAllow, src, tgt, class, datum, conditional);
+        push_av(policy, AvKind::AuditAllow, src, tgt, class, datum, conditional.clone());
     }
     if specified & AVTAB_AUDITDENY != 0 {
         // auditdeny stores the perms that ARE audited on denial; dontaudit is
@@ -954,7 +961,7 @@ fn push_av(
     tgt: &str,
     class: &ResolvedClass,
     mask: u32,
-    conditional: bool,
+    conditional: Option<(bool, String)>,
 ) {
     let perms = decode_perms(mask, class);
     if perms.is_empty() {
@@ -966,7 +973,9 @@ fn push_av(
         target: tgt.to_string(),
         class: class.name.clone(),
         perms,
-        conditional,
+        conditional: conditional.is_some(),
+        conditional_branch: conditional.as_ref().map(|(b, _)| *b),
+        conditional_expr: conditional.map(|(_, expr)| expr),
     });
 }
 
@@ -975,18 +984,33 @@ fn read_cond_list(r: &mut Reader, ctx: &Ctx, policy: &mut Policy) -> Result<(), 
     for _ in 0..nel {
         let _cur_state = r.read_u32()?;
         let expr_len = r.read_u32()?;
-        r.skip(expr_len as usize * 8)?; // expr_type + bool_val per node
+        let mut nodes = Vec::new();
+        for _ in 0..expr_len { nodes.push((r.read_u32()?, r.read_u32()?)); }
+        let expr = render_cond_expr(&nodes, ctx);
 
         let true_nel = r.read_u32()?;
         for _ in 0..true_nel {
-            read_avtab_entry(r, ctx, policy, true)?;
+            read_avtab_entry(r, ctx, policy, Some((true, expr.clone())))?;
         }
         let false_nel = r.read_u32()?;
         for _ in 0..false_nel {
-            read_avtab_entry(r, ctx, policy, true)?;
+            read_avtab_entry(r, ctx, policy, Some((false, expr.clone())))?;
         }
     }
     Ok(())
+}
+
+fn render_cond_expr(nodes: &[(u32, u32)], ctx: &Ctx) -> String {
+    let mut stack: Vec<String> = Vec::new();
+    for &(kind, value) in nodes {
+        match kind {
+            0 => stack.push(ctx.bool_map.get(&value).cloned().unwrap_or_else(|| format!("bool#{}", value))),
+            1 => if let Some(a) = stack.pop() { stack.push(format!("!{}", a)); },
+            2 | 3 => if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) { stack.push(format!("({} {} {})", a, if kind == 2 { "&&" } else { "||" }, b)); },
+            _ => stack.push(format!("expr#{}", kind)),
+        }
+    }
+    stack.pop().unwrap_or_else(|| "<empty>".into())
 }
 
 fn read_filename_trans(
