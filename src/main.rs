@@ -49,6 +49,7 @@ INFO (seinfo-style; printed instead of rules):
         --netifcon         list netifcon entries
         --nodecon          list nodecon entries
         --fs_use           list fs_use_xattr / _task / _trans entries
+        --range_trans      list MLS range_transition rules
         --permissive       list domains marked permissive
         --expand <ATTR>    list the member types of an attribute
 
@@ -94,6 +95,7 @@ struct Config {
     list_netifcon: bool,
     list_nodecon: bool,
     list_fsuse: bool,
+    list_range_trans: bool,
     list_permissive: bool,
     expand_attr: Option<String>,
     // output
@@ -120,6 +122,7 @@ impl Config {
             || self.list_netifcon
             || self.list_nodecon
             || self.list_fsuse
+            || self.list_range_trans
             || self.list_permissive
             || self.constrain
             || self.expand_attr.is_some()
@@ -188,35 +191,64 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
 fn validate_query(cfg: &Config, p: &Policy) -> Result<(), String> {
     let mut names: Vec<String> = p.types.iter().cloned().collect();
     names.extend(p.attributes.keys().cloned());
-    for (label, value) in [("source", cfg.query.source.as_deref()), ("target", cfg.query.target.as_deref())] {
-        if let Some(v) = value { if !names.iter().any(|n| n == v) { return Err(unknown_filter(label, v, &names)); } }
+    for (label, value) in [
+        ("source", cfg.query.source.as_deref()),
+        ("target", cfg.query.target.as_deref()),
+    ] {
+        if let Some(v) = value {
+            if !names.iter().any(|n| n == v) {
+                return Err(unknown_filter(label, v, &names));
+            }
+        }
     }
     if let Some(v) = cfg.query.class.as_deref() {
         let classes: Vec<String> = p.classes.keys().cloned().collect();
-        if !classes.iter().any(|n| n == v) { return Err(unknown_filter("class", v, &classes)); }
+        if !classes.iter().any(|n| n == v) {
+            return Err(unknown_filter("class", v, &classes));
+        }
     }
     let perms: Vec<String> = p.classes.values().flatten().cloned().collect();
-    for v in &cfg.query.perms { if !perms.iter().any(|n| n == v) { return Err(unknown_filter("permission", v, &perms)); } }
+    for v in &cfg.query.perms {
+        if !perms.iter().any(|n| n == v) {
+            return Err(unknown_filter("permission", v, &perms));
+        }
+    }
     if let Some(v) = cfg.expand_attr.as_deref() {
-        if !p.attributes.contains_key(v) { return Err(unknown_filter("attribute", v, &p.attributes.keys().cloned().collect::<Vec<_>>())); }
+        if !p.attributes.contains_key(v) {
+            return Err(unknown_filter(
+                "attribute",
+                v,
+                &p.attributes.keys().cloned().collect::<Vec<_>>(),
+            ));
+        }
     }
     Ok(())
 }
 
 fn unknown_filter(kind: &str, value: &str, candidates: &[String]) -> String {
-    let mut ranked: Vec<(usize, &str)> = candidates.iter().map(|c| (edit_distance(value, c), c.as_str())).collect();
+    let mut ranked: Vec<(usize, &str)> = candidates
+        .iter()
+        .map(|c| (edit_distance(value, c), c.as_str()))
+        .collect();
     ranked.sort_by_key(|x| x.0);
-    let suggestion = ranked.first().filter(|x| x.0 <= value.len().max(x.1.len()) / 2).map(|x| format!(" did you mean: {}?", x.1)).unwrap_or_default();
+    let suggestion = ranked
+        .first()
+        .filter(|x| x.0 <= value.len().max(x.1.len()) / 2)
+        .map(|x| format!(" did you mean: {}?", x.1))
+        .unwrap_or_default();
     format!("unknown {kind} {value}.{suggestion}")
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.bytes().enumerate() {
-        let mut prev = row[0]; row[0] = i + 1;
+        let mut prev = row[0];
+        row[0] = i + 1;
         for (j, cb) in b.bytes().enumerate() {
             let old = row[j + 1];
-            row[j + 1] = (row[j + 1] + 1).min(row[j] + 1).min(prev + usize::from(ca != cb));
+            row[j + 1] = (row[j + 1] + 1)
+                .min(row[j] + 1)
+                .min(prev + usize::from(ca != cb));
             prev = old;
         }
     }
@@ -236,7 +268,8 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
         if let Some(v) = inline {
             return Ok(v);
         }
-        it.next().ok_or_else(|| format!("option {flag} requires a value"))
+        it.next()
+            .ok_or_else(|| format!("option {flag} requires a value"))
     }
 
     while let Some(arg) = it.next() {
@@ -293,6 +326,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
             "--netifcon" => cfg.list_netifcon = true,
             "--nodecon" => cfg.list_nodecon = true,
             "--fs_use" | "--fsuse" => cfg.list_fsuse = true,
+            "--range_trans" | "--range-trans" => cfg.list_range_trans = true,
             "--permissive" => cfg.list_permissive = true,
             "--constrain" => cfg.constrain = true,
             "--expand" | "--expand-attr" => {
@@ -301,7 +335,10 @@ fn parse_args(args: Vec<String>) -> Result<Option<Config>, String> {
             "--json" => cfg.json = true,
             "-n" | "--limit" => {
                 let v = take_value(&flag, inline, &mut it)?;
-                cfg.limit = Some(v.parse().map_err(|_| format!("invalid --limit value: {v}"))?);
+                cfg.limit = Some(
+                    v.parse()
+                        .map_err(|_| format!("invalid --limit value: {v}"))?,
+                );
             }
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("unknown option: {other} (try --help)"));
@@ -393,12 +430,18 @@ fn av_json(r: &policy::AvRule) -> json::Value {
             Array(r.perms.iter().cloned().map(Str).collect()),
         ),
         ("conditional".into(), Bool(r.conditional)),
-        ("conditional_branch".into(), Str(match r.conditional_branch {
-            Some(true) => "true".into(),
-            Some(false) => "false".into(),
-            None => "unconditional".into(),
-        })),
-        ("conditional_expr".into(), Str(r.conditional_expr.clone().unwrap_or_default())),
+        (
+            "conditional_branch".into(),
+            Str(match r.conditional_branch {
+                Some(true) => "true".into(),
+                Some(false) => "false".into(),
+                None => "unconditional".into(),
+            }),
+        ),
+        (
+            "conditional_expr".into(),
+            Str(r.conditional_expr.clone().unwrap_or_default()),
+        ),
     ])
 }
 
@@ -415,9 +458,7 @@ fn xperm_json(r: &policy::XpermRule) -> json::Value {
             Array(
                 r.ranges
                     .iter()
-                    .map(|(lo, hi)| {
-                        Array(vec![Num(*lo as i64), Num(*hi as i64)])
-                    })
+                    .map(|(lo, hi)| Array(vec![Num(*lo as i64), Num(*hi as i64)]))
                     .collect(),
             ),
         ),
@@ -518,6 +559,7 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
                             ("fstype".into(), json::Value::Str(g.fstype.clone())),
                             ("path".into(), json::Value::Str(g.path.clone())),
                             ("type".into(), json::Value::Str(g.context_type.clone())),
+                            ("context".into(), json::Value::Str(g.context.to_string())),
                         ])
                     })
                     .collect(),
@@ -546,22 +588,51 @@ fn print_info(cfg: &Config, policy: &Policy) -> Result<(), String> {
         print_rendered(lines, cfg.json);
     }
     if cfg.list_initialsids {
-        print_rendered(policy.initial_sids.iter().map(|x| x.to_string()).collect(), cfg.json);
+        print_rendered(
+            policy.initial_sids.iter().map(|x| x.to_string()).collect(),
+            cfg.json,
+        );
     }
     if cfg.list_portcon {
-        print_rendered(policy.portcons.iter().map(|x| x.to_string()).collect(), cfg.json);
+        print_rendered(
+            policy.portcons.iter().map(|x| x.to_string()).collect(),
+            cfg.json,
+        );
     }
     if cfg.list_netifcon {
-        print_rendered(policy.netifcons.iter().map(|x| x.to_string()).collect(), cfg.json);
+        print_rendered(
+            policy.netifcons.iter().map(|x| x.to_string()).collect(),
+            cfg.json,
+        );
     }
     if cfg.list_nodecon {
-        print_rendered(policy.nodecons.iter().map(|x| x.to_string()).collect(), cfg.json);
+        print_rendered(
+            policy.nodecons.iter().map(|x| x.to_string()).collect(),
+            cfg.json,
+        );
     }
     if cfg.list_fsuse {
-        print_rendered(policy.fs_uses.iter().map(|x| x.to_string()).collect(), cfg.json);
+        print_rendered(
+            policy.fs_uses.iter().map(|x| x.to_string()).collect(),
+            cfg.json,
+        );
+    }
+    if cfg.list_range_trans {
+        print_rendered(
+            policy
+                .range_transitions
+                .iter()
+                .map(|x| x.to_string())
+                .collect(),
+            cfg.json,
+        );
     }
     if cfg.list_permissive {
-        print_list("Permissive types", policy.permissive_types.iter().cloned().collect(), cfg.json);
+        print_list(
+            "Permissive types",
+            policy.permissive_types.iter().cloned().collect(),
+            cfg.json,
+        );
     }
     if let Some(attr) = &cfg.expand_attr {
         let members = policy
@@ -637,6 +708,7 @@ fn print_stats(p: &Policy) {
     println!("netifcon entries:  {}", p.netifcons.len());
     println!("nodecon entries:   {}", p.nodecons.len());
     println!("fs_use entries:    {}", p.fs_uses.len());
+    println!("range transitions: {}", p.range_transitions.len());
     println!("policy caps:       {}", p.policycaps.len());
 }
 
@@ -674,6 +746,10 @@ fn stats_json(p: &Policy) -> json::Value {
         ("netifcons".into(), Num(p.netifcons.len() as i64)),
         ("nodecons".into(), Num(p.nodecons.len() as i64)),
         ("fs_uses".into(), Num(p.fs_uses.len() as i64)),
+        (
+            "range_transitions".into(),
+            Num(p.range_transitions.len() as i64),
+        ),
         ("policycaps".into(), Num(p.policycaps.len() as i64)),
     ])
 }

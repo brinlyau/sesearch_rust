@@ -9,7 +9,7 @@
 //! transitions, and finally the type-attribute map.
 
 use crate::policy::*;
-use crate::reader::Reader;
+use crate::reader::{RawContext, RawMlsLevel, RawMlsRange, Reader};
 use std::collections::{BTreeSet, HashMap};
 
 const SELINUX_MAGIC: u32 = 0xF97C_FF8C;
@@ -216,7 +216,11 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             policy.policycaps.insert(policycap_name(bit));
         }
     }
-    let permissive_bits = if version >= V_PERMISSIVE { r.read_ebitmap()? } else { Vec::new() };
+    let permissive_bits = if version >= V_PERMISSIVE {
+        r.read_ebitmap()?
+    } else {
+        Vec::new()
+    };
     if version >= V_NEVERAUDIT {
         r.skip_ebitmap()?; // never-audit map
     }
@@ -228,6 +232,8 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
     let mut type_val_to_name: HashMap<u32, String> = HashMap::new();
     let mut role_val_to_name: HashMap<u32, String> = HashMap::new();
     let mut user_val_to_name: HashMap<u32, String> = HashMap::new();
+    let mut sens_val_to_name: HashMap<u32, String> = HashMap::new();
+    let mut cat_val_to_name: HashMap<u32, String> = HashMap::new();
     let mut bool_names: HashMap<u32, String> = HashMap::new();
     let mut attr_names: BTreeSet<String> = BTreeSet::new();
     let mut types_nprim: usize = 0;
@@ -285,14 +291,16 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
             }
             SYM_LEVELS => {
                 for _ in 0..nel {
-                    if let Some(name) = read_sens(&mut r)? {
+                    if let Some((name, value)) = read_sens(&mut r)? {
+                        sens_val_to_name.insert(value, name.clone());
                         policy.sensitivities.push(name);
                     }
                 }
             }
             SYM_CATS => {
                 for _ in 0..nel {
-                    if let Some(name) = read_cat(&mut r)? {
+                    if let Some((name, value)) = read_cat(&mut r)? {
+                        cat_val_to_name.insert(value, name.clone());
                         policy.categories.push(name);
                     }
                 }
@@ -317,9 +325,10 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
         }
         let mut ordered: Vec<(u32, String)> = perms.iter().map(|(k, v)| (*k, v.clone())).collect();
         ordered.sort_by_key(|(k, _)| *k);
-        policy
-            .classes
-            .insert(cd.name.clone(), ordered.into_iter().map(|(_, v)| v).collect());
+        policy.classes.insert(
+            cd.name.clone(),
+            ordered.into_iter().map(|(_, v)| v).collect(),
+        );
         class_map.insert(
             cd.value,
             ResolvedClass {
@@ -361,6 +370,10 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
         type_map: &type_val_to_name,
         class_map: &class_map,
         bool_map: &bool_names,
+        role_map: &role_val_to_name,
+        user_map: &user_val_to_name,
+        sens_map: &sens_val_to_name,
+        cat_map: &cat_val_to_name,
     };
     for bit in permissive_bits {
         if let Some(name) = type_val_to_name.get(&(bit + 1)) {
@@ -411,11 +424,12 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
         for _ in 0..ncon {
             let path = r.read_string()?;
             let _sclass = r.read_u32()?;
-            let ctx_type = r.read_context_type(mls)?;
+            let context = ctx.context(r.read_context(mls)?);
             policy.genfs.push(Genfs {
                 fstype: fstype.clone(),
                 path,
-                context_type: ctx.type_name(ctx_type),
+                context_type: context.type_name.clone(),
+                context,
             });
         }
     }
@@ -424,11 +438,20 @@ pub fn parse(data: &[u8]) -> Result<Policy, String> {
     if mls {
         let range_tr_nel = r.read_u32()?;
         for _ in 0..range_tr_nel {
-            r.skip(8)?; // source_type + target_type
-            if version >= 21 {
-                r.skip(4)?; // target_class
-            }
-            r.skip_mls_range()?;
+            let source = ctx.type_name(r.read_u32()?);
+            let target = ctx.type_name(r.read_u32()?);
+            let class = if version >= 21 {
+                Some(ctx.class_name(r.read_u32()?))
+            } else {
+                None
+            };
+            let range = ctx.mls_range(r.read_mls_range()?);
+            policy.range_transitions.push(RangeTransition {
+                source,
+                target,
+                class,
+                range,
+            });
         }
     }
 
@@ -485,6 +508,10 @@ struct Ctx<'a> {
     type_map: &'a HashMap<u32, String>,
     class_map: &'a HashMap<u32, ResolvedClass>,
     bool_map: &'a HashMap<u32, String>,
+    role_map: &'a HashMap<u32, String>,
+    user_map: &'a HashMap<u32, String>,
+    sens_map: &'a HashMap<u32, String>,
+    cat_map: &'a HashMap<u32, String>,
 }
 
 impl Ctx<'_> {
@@ -500,6 +527,65 @@ impl Ctx<'_> {
             .get(&val)
             .map(|c| c.name.clone())
             .unwrap_or_else(|| format!("class#{}", val))
+    }
+    fn context(&self, raw: RawContext) -> SecurityContext {
+        let level = |l: RawMlsLevel| MlsLevel {
+            sensitivity: self
+                .sens_map
+                .get(&l.sensitivity)
+                .cloned()
+                .unwrap_or_else(|| format!("s#{}", l.sensitivity)),
+            categories: l
+                .categories
+                .into_iter()
+                .map(|v| {
+                    self.cat_map
+                        .get(&(v + 1))
+                        .cloned()
+                        .unwrap_or_else(|| format!("c#{}", v + 1))
+                })
+                .collect(),
+        };
+        SecurityContext {
+            user: self
+                .user_map
+                .get(&raw.user)
+                .cloned()
+                .unwrap_or_else(|| format!("user#{}", raw.user)),
+            role: self
+                .role_map
+                .get(&raw.role)
+                .cloned()
+                .unwrap_or_else(|| format!("role#{}", raw.role)),
+            type_name: self.type_name(raw.typ),
+            range: raw.range.map(|r| MlsRange {
+                low: level(r.low),
+                high: level(r.high),
+            }),
+        }
+    }
+    fn mls_range(&self, raw: RawMlsRange) -> MlsRange {
+        let level = |l: RawMlsLevel| MlsLevel {
+            sensitivity: self
+                .sens_map
+                .get(&l.sensitivity)
+                .cloned()
+                .unwrap_or_else(|| format!("s#{}", l.sensitivity)),
+            categories: l
+                .categories
+                .into_iter()
+                .map(|v| {
+                    self.cat_map
+                        .get(&(v + 1))
+                        .cloned()
+                        .unwrap_or_else(|| format!("c#{}", v + 1))
+                })
+                .collect(),
+        };
+        MlsRange {
+            low: level(raw.low),
+            high: level(raw.high),
+        }
     }
 }
 
@@ -667,21 +753,21 @@ fn read_bool(r: &mut Reader) -> Result<(String, bool, u32), String> {
 }
 
 /// A sensitivity datum; returns its name unless it's an alias.
-fn read_sens(r: &mut Reader) -> Result<Option<String>, String> {
+fn read_sens(r: &mut Reader) -> Result<Option<(String, u32)>, String> {
     let len = r.read_u32()? as usize;
     let isalias = r.read_u32()?;
     let name = r.read_key(len)?;
-    r.skip_mls_level()?;
-    Ok((isalias == 0).then_some(name))
+    let value = r.read_mls_level()?.sensitivity;
+    Ok((isalias == 0).then_some((name, value)))
 }
 
 /// A category datum; returns its name unless it's an alias.
-fn read_cat(r: &mut Reader) -> Result<Option<String>, String> {
+fn read_cat(r: &mut Reader) -> Result<Option<(String, u32)>, String> {
     let len = r.read_u32()? as usize;
-    let _value = r.read_u32()?;
+    let value = r.read_u32()?;
     let isalias = r.read_u32()?;
     let name = r.read_key(len)?;
-    Ok((isalias == 0).then_some(name))
+    Ok((isalias == 0).then_some((name, value)))
 }
 
 // ---------------------------------------------------------------------------
@@ -714,7 +800,11 @@ fn render_constraint_expr(exprs: &[RawExpr], names: &NameMaps) -> (String, bool)
                 let (Some(b), Some(a)) = (stack.pop(), stack.pop()) else {
                     return (String::new(), mls);
                 };
-                let kw = if e.expr_type == CEXPR_AND { "and" } else { "or" };
+                let kw = if e.expr_type == CEXPR_AND {
+                    "and"
+                } else {
+                    "or"
+                };
                 stack.push(format!("{} {} {}", a, kw, b));
             }
             CEXPR_ATTR => {
@@ -932,10 +1022,26 @@ fn read_avtab_entry(
     }
 
     if specified & AVTAB_ALLOWED != 0 {
-        push_av(policy, AvKind::Allow, src, tgt, class, datum, conditional.clone());
+        push_av(
+            policy,
+            AvKind::Allow,
+            src,
+            tgt,
+            class,
+            datum,
+            conditional.clone(),
+        );
     }
     if specified & AVTAB_AUDITALLOW != 0 {
-        push_av(policy, AvKind::AuditAllow, src, tgt, class, datum, conditional.clone());
+        push_av(
+            policy,
+            AvKind::AuditAllow,
+            src,
+            tgt,
+            class,
+            datum,
+            conditional.clone(),
+        );
     }
     if specified & AVTAB_AUDITDENY != 0 {
         // auditdeny stores the perms that ARE audited on denial; dontaudit is
@@ -947,7 +1053,15 @@ fn read_avtab_entry(
             u32::MAX
         };
         let dontaudit_mask = !datum & full_mask;
-        push_av(policy, AvKind::DontAudit, src, tgt, class, dontaudit_mask, conditional);
+        push_av(
+            policy,
+            AvKind::DontAudit,
+            src,
+            tgt,
+            class,
+            dontaudit_mask,
+            conditional,
+        );
     }
 
     Ok(())
@@ -985,7 +1099,9 @@ fn read_cond_list(r: &mut Reader, ctx: &Ctx, policy: &mut Policy) -> Result<(), 
         let _cur_state = r.read_u32()?;
         let expr_len = r.read_u32()?;
         let mut nodes = Vec::new();
-        for _ in 0..expr_len { nodes.push((r.read_u32()?, r.read_u32()?)); }
+        for _ in 0..expr_len {
+            nodes.push((r.read_u32()?, r.read_u32()?));
+        }
         let expr = render_cond_expr(&nodes, ctx);
 
         let true_nel = r.read_u32()?;
@@ -1004,9 +1120,27 @@ fn render_cond_expr(nodes: &[(u32, u32)], ctx: &Ctx) -> String {
     let mut stack: Vec<String> = Vec::new();
     for &(kind, value) in nodes {
         match kind {
-            0 => stack.push(ctx.bool_map.get(&value).cloned().unwrap_or_else(|| format!("bool#{}", value))),
-            1 => if let Some(a) = stack.pop() { stack.push(format!("!{}", a)); },
-            2 | 3 => if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) { stack.push(format!("({} {} {})", a, if kind == 2 { "&&" } else { "||" }, b)); },
+            0 => stack.push(
+                ctx.bool_map
+                    .get(&value)
+                    .cloned()
+                    .unwrap_or_else(|| format!("bool#{}", value)),
+            ),
+            1 => {
+                if let Some(a) = stack.pop() {
+                    stack.push(format!("!{}", a));
+                }
+            }
+            2 | 3 => {
+                if let (Some(b), Some(a)) = (stack.pop(), stack.pop()) {
+                    stack.push(format!(
+                        "({} {} {})",
+                        a,
+                        if kind == 2 { "&&" } else { "||" },
+                        b
+                    ));
+                }
+            }
             _ => stack.push(format!("expr#{}", kind)),
         }
     }
@@ -1075,14 +1209,15 @@ fn read_ocon_entry(
         0 => {
             // ISID: sid(u32) + context
             let sid = r.read_u32()?;
-            let ty = r.read_context_type(mls)?;
+            let context = ctx.context(r.read_context(mls)?);
             let name = INITIAL_SID_NAMES
                 .get(sid.wrapping_sub(1) as usize)
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("sid#{}", sid));
             policy.initial_sids.push(InitialSid {
                 name,
-                context_type: ctx.type_name(ty),
+                context_type: context.type_name.clone(),
+                context,
             });
         }
         1 => {
@@ -1096,41 +1231,45 @@ fn read_ocon_entry(
             let protocol = r.read_u32()?;
             let low = r.read_u32()?;
             let high = r.read_u32()?;
-            let ty = r.read_context_type(mls)?;
+            let context = ctx.context(r.read_context(mls)?);
             policy.portcons.push(PortCon {
                 protocol: protocol_name(protocol),
                 low,
                 high,
-                context_type: ctx.type_name(ty),
+                context_type: context.type_name.clone(),
+                context,
             });
         }
         3 => {
             // NETIF: name + interface context + packet context
             let name = r.read_string()?;
-            let if_ty = r.read_context_type(mls)?;
-            let pkt_ty = r.read_context_type(mls)?;
+            let if_context = ctx.context(r.read_context(mls)?);
+            let packet_context = ctx.context(r.read_context(mls)?);
             policy.netifcons.push(NetifCon {
                 name,
-                if_type: ctx.type_name(if_ty),
-                packet_type: ctx.type_name(pkt_ty),
+                if_type: if_context.type_name.clone(),
+                packet_type: packet_context.type_name.clone(),
+                if_context,
+                packet_context,
             });
         }
         4 => {
             // NODE: addr(u32) + mask(u32) + context (IPv4, network byte order)
             let addr = r.read_u32()?;
             let mask = r.read_u32()?;
-            let ty = r.read_context_type(mls)?;
+            let context = ctx.context(r.read_context(mls)?);
             policy.nodecons.push(NodeCon {
                 addr: ipv4(addr),
                 mask: ipv4(mask),
-                context_type: ctx.type_name(ty),
+                context_type: context.type_name.clone(),
+                context,
             });
         }
         5 => {
             // FSUSE: behavior + fstype name + context
             let behavior = r.read_u32()?;
             let fstype = r.read_string()?;
-            let ty = r.read_context_type(mls)?;
+            let context = ctx.context(r.read_context(mls)?);
             let behavior = FS_USE_NAMES
                 .get(behavior as usize)
                 .map(|s| s.to_string())
@@ -1138,18 +1277,20 @@ fn read_ocon_entry(
             policy.fs_uses.push(FsUse {
                 behavior,
                 fstype,
-                context_type: ctx.type_name(ty),
+                context_type: context.type_name.clone(),
+                context,
             });
         }
         6 => {
             // NODE6: addr(4*u32) + mask(4*u32) + context (IPv6)
             let addr = read_u32x4(r)?;
             let mask = read_u32x4(r)?;
-            let ty = r.read_context_type(mls)?;
+            let context = ctx.context(r.read_context(mls)?);
             policy.nodecons.push(NodeCon {
                 addr: ipv6(addr),
                 mask: ipv6(mask),
-                context_type: ctx.type_name(ty),
+                context_type: context.type_name.clone(),
+                context,
             });
         }
         7 => {
@@ -1204,7 +1345,9 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         assert!(parse(&[0u8; 32]).is_err());
-        assert!(parse(b"not a policy at all").unwrap_err().contains("not a SELinux"));
+        assert!(parse(b"not a policy at all")
+            .unwrap_err()
+            .contains("not a SELinux"));
     }
 
     #[test]
@@ -1212,7 +1355,10 @@ mod tests {
         let mut data = vec![0x8C, 0xFF, 0x7C, 0xF9];
         data.extend_from_slice(&[0; 20]);
         let err = parse(&data).unwrap_err();
-        assert!(err.contains("EOF") || err.contains("unsupported"), "got: {err}");
+        assert!(
+            err.contains("EOF") || err.contains("unsupported"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1274,13 +1420,32 @@ mod tests {
     fn renders_constraint_expression() {
         // (t1 != { a } and r1 == r2)  — RPN: NAMES, ATTR, AND
         let exprs = vec![
-            RawExpr { expr_type: CEXPR_NAMES, attr: CEXPR_TYPE, op: CEXPR_NEQ, names: vec![1] },
-            RawExpr { expr_type: CEXPR_ATTR, attr: CEXPR_ROLE, op: CEXPR_EQ, names: vec![] },
-            RawExpr { expr_type: CEXPR_AND, attr: 0, op: 0, names: vec![] },
+            RawExpr {
+                expr_type: CEXPR_NAMES,
+                attr: CEXPR_TYPE,
+                op: CEXPR_NEQ,
+                names: vec![1],
+            },
+            RawExpr {
+                expr_type: CEXPR_ATTR,
+                attr: CEXPR_ROLE,
+                op: CEXPR_EQ,
+                names: vec![],
+            },
+            RawExpr {
+                expr_type: CEXPR_AND,
+                attr: 0,
+                op: 0,
+                names: vec![],
+            },
         ];
         let mut types = HashMap::new();
         types.insert(1u32, "a".to_string());
-        let names = NameMaps { types: &types, roles: &HashMap::new(), users: &HashMap::new() };
+        let names = NameMaps {
+            types: &types,
+            roles: &HashMap::new(),
+            users: &HashMap::new(),
+        };
         let (expr, mls) = render_constraint_expr(&exprs, &names);
         assert_eq!(expr, "t1 != a and r1 == r2");
         assert!(!mls);

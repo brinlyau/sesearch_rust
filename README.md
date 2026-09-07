@@ -94,6 +94,8 @@ Printed instead of rules:
 | `--netifcon` | `netifcon` entries |
 | `--nodecon` | `nodecon` entries |
 | `--fs_use` | `fs_use_xattr` / `_task` / `_trans` entries |
+| `--range_trans`, `--range-trans` | MLS `range_transition` rules |
+| `--permissive` | domains marked permissive in the policy |
 | `--expand <ATTR>` | the member types of an attribute |
 
 ### Options
@@ -148,6 +150,16 @@ $ sesearch_rust --fs_use precompiled_sepolicy
 fs_use_xattr ext4 labeledfs
 ...
 
+# MLS range transitions
+$ sesearch_rust --range_trans precompiled_sepolicy
+range_transition untrusted_app app_data_file:dir s0:c512;
+...
+
+# Domains marked permissive
+$ sesearch_rust --permissive precompiled_sepolicy
+untrusted_app
+...
+
 # Machine-readable output (--direct so the source is literally `shell`)
 $ sesearch_rust -A -s shell -d --json precompiled_sepolicy | jq '.[0]'
 {
@@ -159,6 +171,19 @@ $ sesearch_rust -A -s shell -d --json precompiled_sepolicy | jq '.[0]'
   "conditional": false
 }
 ```
+
+## Browser workbench
+
+The `webapp/` directory contains a dependency-free browser UI for the same
+policy format. It parses the policy locally in JavaScript, so the policy file
+is not uploaded anywhere. Open `webapp/index.html` in a modern browser, then
+drop an Android `sepolicy` / `precompiled_sepolicy` file onto the page (or
+choose **Open policy**). The workbench provides rule filters, attribute-aware
+matching, policy metadata views, and JSON export.
+
+For browsers that block local file access, serve the repository directory with
+any static HTTP server and open `/webapp/` instead. No build step or network
+connection is required.
 
 ## What it parses
 
@@ -178,20 +203,32 @@ From the compiled `policydb`:
 - **Constraints**: `constrain` / `mlsconstrain` (and `validatetrans`) — the
   reverse-Polish expression on disk is reconstructed into a readable infix
   string (e.g. `h1 == h2 and l1 == l2 or t1 == { ... }`).
-- **MLS**: sensitivities and categories.
-- **Contexts**: `genfscon`, initial SIDs, `portcon`, `netifcon`, `nodecon`
-  (IPv4 and IPv6), and `fs_use_*`; policy capabilities.
+- **MLS**: sensitivities, categories, and `range_transition` rules with their
+  MLS ranges.
+- **Contexts**: full `user:role:type[:MLS-range]` labels for `genfscon`,
+  initial SIDs, `portcon`, `netifcon`, `nodecon` (IPv4 and IPv6), and
+  `fs_use_*`; policy capabilities.
 
-### Known limitations
+### Known limitations and TODO
 
-- **`neverallow`** rules are *not* present in a compiled kernel policy — they're
-  compile-time assertions checked by `checkpolicy`/`secilc` and discarded. This
-  tool can't show them. (A future CIL/`.te` front end could.)
-- MLS ranges attached to contexts (the `s0:c0.c1023` part of a label) are parsed
-  for alignment but not rendered — only the type component of each context is
-  surfaced.
+- **`neverallow`** rules cannot be recovered from a compiled kernel policy.
+  They are source-level assertions checked by `checkpolicy`/`secilc` while a
+  CIL or `.te` policy is being compiled, and are discarded from the binary
+  `policydb` afterward. Consequently, this tool cannot list or query them from
+  `sepolicy` / `precompiled_sepolicy`; supporting them requires a separate
+  CIL/`.te` source-policy parser.
 - InfiniBand contexts (`ibpkeycon`, `ibendportcon`) are parsed only enough to
-  stay aligned, not surfaced. (Android policies don't use them.)
+  stay aligned, not surfaced. AOSP's Android policy toolchain rejects
+  `ibpkeycon` for Android targets, but a compiled policy from another SELinux
+  platform may still contain these records.
+
+The next useful improvements are:
+
+- Add a CIL / `.te` front end so source-policy `neverallow` rules can be
+  inspected alongside compiled-policy queries.
+- Expose InfiniBand contexts in the CLI and browser workbench.
+- Expand browser-side regression coverage against the Rust parser's synthetic
+  policies.
 
 ## How it works
 
@@ -245,6 +282,7 @@ gets right:
 | `json.rs` | minimal JSON serializer |
 | `main.rs` | CLI argument parsing and output |
 | `testgen.rs` | synthetic policy generator for tests |
+| `webapp/` | self-contained offline browser workbench (`index.html`, `app.js`, `sepolicy.js`) |
 
 ## Tests
 

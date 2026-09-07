@@ -12,6 +12,24 @@ pub struct Reader<'a> {
     pos: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct RawMlsLevel {
+    pub sensitivity: u32,
+    pub categories: Vec<u32>,
+}
+#[derive(Debug, Clone)]
+pub struct RawMlsRange {
+    pub low: RawMlsLevel,
+    pub high: RawMlsLevel,
+}
+#[derive(Debug, Clone)]
+pub struct RawContext {
+    pub user: u32,
+    pub role: u32,
+    pub typ: u32,
+    pub range: Option<RawMlsRange>,
+}
+
 impl<'a> Reader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
@@ -147,6 +165,59 @@ impl<'a> Reader<'a> {
         self.skip_ebitmap()
     }
 
+    pub fn read_mls_level(&mut self) -> Result<RawMlsLevel, String> {
+        Ok(RawMlsLevel {
+            sensitivity: self.read_u32()?,
+            categories: self.read_ebitmap()?,
+        })
+    }
+
+    pub fn read_mls_range(&mut self) -> Result<RawMlsRange, String> {
+        let items = self.read_u32()?;
+        if !(1..=2).contains(&items) {
+            return Err(format!("invalid MLS range item count {items}"));
+        }
+        let low_sensitivity = self.read_u32()?;
+        let high_sensitivity = if items == 2 {
+            self.read_u32()?
+        } else {
+            low_sensitivity
+        };
+        let low_categories = self.read_ebitmap()?;
+        let high_categories = if items == 2 {
+            self.read_ebitmap()?
+        } else {
+            low_categories.clone()
+        };
+        Ok(RawMlsRange {
+            low: RawMlsLevel {
+                sensitivity: low_sensitivity,
+                categories: low_categories,
+            },
+            high: RawMlsLevel {
+                sensitivity: high_sensitivity,
+                categories: high_categories,
+            },
+        })
+    }
+
+    pub fn read_context(&mut self, mls: bool) -> Result<RawContext, String> {
+        let user = self.read_u32()?;
+        let role = self.read_u32()?;
+        let typ = self.read_u32()?;
+        let range = if mls {
+            Some(self.read_mls_range()?)
+        } else {
+            None
+        };
+        Ok(RawContext {
+            user,
+            role,
+            typ,
+            range,
+        })
+    }
+
     /// MLS range (`mls_read_range_helper`): an `items` count, then 1 or 2
     /// sensitivities, then 1 or 2 category ebitmaps. When `items == 1` the
     /// high level mirrors the low level and only one of each is stored.
@@ -167,13 +238,7 @@ impl<'a> Reader<'a> {
     /// policy is MLS — an MLS range. Returns the type value, the only field we
     /// surface.
     pub fn read_context_type(&mut self, mls: bool) -> Result<u32, String> {
-        let _user = self.read_u32()?;
-        let _role = self.read_u32()?;
-        let typ = self.read_u32()?;
-        if mls {
-            self.skip_mls_range()?;
-        }
-        Ok(typ)
+        Ok(self.read_context(mls)?.typ)
     }
 
     pub fn skip_context(&mut self, mls: bool) -> Result<(), String> {

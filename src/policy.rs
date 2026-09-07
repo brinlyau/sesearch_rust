@@ -52,8 +52,14 @@ impl fmt::Display for AvRule {
             self.perms.join(" ")
         )?;
         if let Some(branch) = self.conditional_branch {
-            write!(f, "  # conditional ({})", if branch { "true" } else { "false" })?;
-            if let Some(expr) = &self.conditional_expr { write!(f, " if {}", expr)?; }
+            write!(
+                f,
+                "  # conditional ({})",
+                if branch { "true" } else { "false" }
+            )?;
+            if let Some(expr) = &self.conditional_expr {
+                write!(f, " if {}", expr)?;
+            }
         }
         Ok(())
     }
@@ -164,17 +170,63 @@ impl fmt::Display for TeRule {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MlsLevel {
+    pub sensitivity: String,
+    pub categories: Vec<String>,
+}
+impl fmt::Display for MlsLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.sensitivity)?;
+        if !self.categories.is_empty() {
+            write!(f, ":{}", self.categories.join(","))?;
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MlsRange {
+    pub low: MlsLevel,
+    pub high: MlsLevel,
+}
+impl fmt::Display for MlsRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.low)?;
+        if self.low != self.high {
+            write!(f, "-{}", self.high)?;
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityContext {
+    pub user: String,
+    pub role: String,
+    pub type_name: String,
+    pub range: Option<MlsRange>,
+}
+impl fmt::Display for SecurityContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.user, self.role, self.type_name)?;
+        if let Some(range) = &self.range {
+            write!(f, ":{range}")?;
+        }
+        Ok(())
+    }
+}
+
 /// A `genfscon` filesystem-context binding.
 #[derive(Debug, Clone)]
 pub struct Genfs {
     pub fstype: String,
     pub path: String,
     pub context_type: String,
+    pub context: SecurityContext,
 }
 
 impl fmt::Display for Genfs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "genfscon {} {} {}", self.fstype, self.path, self.context_type)
+        write!(f, "genfscon {} {} {}", self.fstype, self.path, self.context)
     }
 }
 
@@ -183,11 +235,12 @@ impl fmt::Display for Genfs {
 pub struct InitialSid {
     pub name: String,
     pub context_type: String,
+    pub context: SecurityContext,
 }
 
 impl fmt::Display for InitialSid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sid {} {}", self.name, self.context_type)
+        write!(f, "sid {} {}", self.name, self.context)
     }
 }
 
@@ -198,17 +251,18 @@ pub struct PortCon {
     pub low: u32,
     pub high: u32,
     pub context_type: String,
+    pub context: SecurityContext,
 }
 
 impl fmt::Display for PortCon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.low == self.high {
-            write!(f, "portcon {} {} {}", self.protocol, self.low, self.context_type)
+            write!(f, "portcon {} {} {}", self.protocol, self.low, self.context)
         } else {
             write!(
                 f,
                 "portcon {} {}-{} {}",
-                self.protocol, self.low, self.high, self.context_type
+                self.protocol, self.low, self.high, self.context
             )
         }
     }
@@ -220,11 +274,17 @@ pub struct NetifCon {
     pub name: String,
     pub if_type: String,
     pub packet_type: String,
+    pub if_context: SecurityContext,
+    pub packet_context: SecurityContext,
 }
 
 impl fmt::Display for NetifCon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "netifcon {} {} {}", self.name, self.if_type, self.packet_type)
+        write!(
+            f,
+            "netifcon {} {} {}",
+            self.name, self.if_context, self.packet_context
+        )
     }
 }
 
@@ -234,11 +294,12 @@ pub struct NodeCon {
     pub addr: String,
     pub mask: String,
     pub context_type: String,
+    pub context: SecurityContext,
 }
 
 impl fmt::Display for NodeCon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "nodecon {} {} {}", self.addr, self.mask, self.context_type)
+        write!(f, "nodecon {} {} {}", self.addr, self.mask, self.context)
     }
 }
 
@@ -248,11 +309,30 @@ pub struct FsUse {
     pub behavior: String,
     pub fstype: String,
     pub context_type: String,
+    pub context: SecurityContext,
+}
+
+/// An MLS `range_transition` rule.
+#[derive(Debug, Clone)]
+pub struct RangeTransition {
+    pub source: String,
+    pub target: String,
+    pub class: Option<String>,
+    pub range: MlsRange,
+}
+impl fmt::Display for RangeTransition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "range_transition {} {}", self.source, self.target)?;
+        if let Some(class) = &self.class {
+            write!(f, ":{class}")?;
+        }
+        write!(f, " {};", self.range)
+    }
 }
 
 impl fmt::Display for FsUse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}", self.behavior, self.fstype, self.context_type)
+        write!(f, "{} {} {}", self.behavior, self.fstype, self.context)
     }
 }
 
@@ -320,6 +400,7 @@ pub struct Policy {
     pub netifcons: Vec<NetifCon>,
     pub nodecons: Vec<NodeCon>,
     pub fs_uses: Vec<FsUse>,
+    pub range_transitions: Vec<RangeTransition>,
     pub policycaps: BTreeSet<String>,
     /// Domains marked permissive in the compiled policy.
     pub permissive_types: BTreeSet<String>,
@@ -381,10 +462,14 @@ impl Query {
         // When both names are attributes, their denotations overlap if they
         // share at least one concrete type.  A rule written on either
         // attribute therefore applies to a query for the other attribute.
-        if let (Some(operand_members), Some(filter_members)) =
-            (policy.attributes.get(operand), policy.attributes.get(filter))
-        {
-            if operand_members.iter().any(|member| filter_members.contains(member)) {
+        if let (Some(operand_members), Some(filter_members)) = (
+            policy.attributes.get(operand),
+            policy.attributes.get(filter),
+        ) {
+            if operand_members
+                .iter()
+                .any(|member| filter_members.contains(member))
+            {
                 return true;
             }
         }
@@ -415,7 +500,10 @@ impl Query {
             return false;
         }
         if !self.perms.is_empty() {
-            let granted = self.perms.iter().any(|p| rule.perms.iter().any(|rp| rp == p));
+            let granted = self
+                .perms
+                .iter()
+                .any(|p| rule.perms.iter().any(|rp| rp == p));
             if !granted {
                 return false;
             }
@@ -470,7 +558,10 @@ mod tests {
             source: Some("untrusted_app".into()),
             ..Default::default()
         };
-        assert!(q.matches_av(&p, &allow("untrusted_app", "shell_data_file", "file", &["read"])));
+        assert!(q.matches_av(
+            &p,
+            &allow("untrusted_app", "shell_data_file", "file", &["read"])
+        ));
         assert!(!q.matches_av(&p, &allow("priv_app", "shell_data_file", "file", &["read"])));
     }
 
